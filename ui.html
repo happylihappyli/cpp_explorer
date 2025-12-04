@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>C++资源管理器</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background-color: #0078d7;
+            color: white;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        .toolbar {
+            padding: 15px 20px;
+            background-color: #f0f0f0;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+            align-items: center;
+        }
+        .address-bar {
+            flex-grow: 1;
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+            margin-right: 10px;
+        }
+        .btn {
+            padding: 8px 16px;
+            background-color: #0078d7;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 5px;
+        }
+        .btn:hover {
+            background-color: #005a9e;
+        }
+        .btn:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .content {
+            padding: 20px;
+        }
+        .file-list {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .file-list th {
+            background-color: #f0f0f0;
+            text-align: left;
+            padding: 12px;
+            border-bottom: 2px solid #ddd;
+        }
+        .file-list td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #eee;
+        }
+        .file-list tr:hover {
+            background-color: #f9f9f9;
+        }
+        .file-icon {
+            width: 24px;
+            height: 24px;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        .file-name {
+            display: flex;
+            align-items: center;
+        }
+        .dir-icon {
+            color: #0078d7;
+            font-weight: bold;
+        }
+        .file-icon-folder {
+            color: #ffb900;
+        }
+        .file-icon-file {
+            color: #888;
+        }
+        .status-bar {
+            padding: 10px 20px;
+            background-color: #f0f0f0;
+            border-top: 1px solid #ddd;
+            font-size: 12px;
+            color: #666;
+        }
+        .back-btn {
+            background-color: #e1e1e1;
+            color: #333;
+            margin-right: 10px;
+        }
+        .back-btn:hover {
+            background-color: #d1d1d1;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📁 C++资源管理器</h1>
+        </div>
+        
+        <div class="toolbar">
+            <button id="backBtn" class="btn back-btn" onclick="goBack()">← 后退</button>
+            <input type="text" id="addressBar" class="address-bar" placeholder="请输入路径...">
+            <button id="goBtn" class="btn" onclick="navigateToPath()">前往</button>
+        </div>
+        
+        <div class="content">
+            <table class="file-list">
+                <thead>
+                    <tr>
+                        <th>名称</th>
+                        <th>大小</th>
+                        <th>类型</th>
+                    </tr>
+                </thead>
+                <tbody id="fileList">
+                    <!-- 文件列表将通过JavaScript动态填充 -->
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="status-bar">
+            <span id="status">就绪</span>
+        </div>
+    </div>
+
+    <script>
+        // 全局变量存储当前路径
+        let currentPath = '';
+        
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            // 绑定回车键事件到地址栏
+            document.getElementById('addressBar').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    navigateToPath();
+                }
+            });
+            
+            // 页面加载完成后通知C++后端
+            if (window.chrome && chrome.webview) {
+                chrome.webview.postMessage({type: 'ready'});
+            }
+        });
+        
+        // 从C++后端加载目录内容
+        window.loadDirectoryContent = function(path, files) {
+            currentPath = path;
+            // 更新地址栏
+            document.getElementById('addressBar').value = path;
+            // 显示文件列表
+            displayFiles(files);
+        };
+        
+        // 显示文件列表
+        function displayFiles(files) {
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = '';
+            
+            files.forEach(file => {
+                const row = document.createElement('tr');
+                row.onclick = () => {
+                    if (file.isDirectory) {
+                        // 导航到子目录
+                        navigateToDirectory(file.name);
+                    } else {
+                        // 打开文件
+                        openFile(file.name);
+                    }
+                };
+                
+                row.innerHTML = `
+                    <td>
+                        <div class="file-name">
+                            <span class="file-icon ${file.isDirectory ? 'file-icon-folder' : 'file-icon-file'}">
+                                ${file.isDirectory ? '📁' : '📄'}
+                            </span>
+                            ${file.name}
+                        </div>
+                    </td>
+                    <td>${file.size}</td>
+                    <td>${file.isDirectory ? '文件夹' : '文件'}</td>
+                `;
+                
+                fileList.appendChild(row);
+            });
+            
+            document.getElementById('status').textContent = `共 ${files.length} 个项目`;
+        }
+        
+        // 导航到指定路径
+        function navigateToPath() {
+            const path = document.getElementById('addressBar').value;
+            if (path && window.chrome && chrome.webview) {
+                chrome.webview.postMessage({type: 'navigate', path: path});
+            }
+        }
+        
+        // 导航到指定目录
+        function navigateToDirectory(dirName) {
+            if (window.chrome && chrome.webview) {
+                chrome.webview.postMessage({type: 'navigateDir', dirName: dirName});
+            }
+        }
+        
+        // 打开文件
+        function openFile(fileName) {
+            if (window.chrome && chrome.webview) {
+                chrome.webview.postMessage({type: 'openFile', fileName: fileName});
+            }
+        }
+        
+        // 返回上级目录
+        function goBack() {
+            if (window.chrome && chrome.webview) {
+                chrome.webview.postMessage({type: 'goBack'});
+            }
+        }
+    </script>
+</body>
+</html>
