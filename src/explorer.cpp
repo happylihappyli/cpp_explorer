@@ -680,14 +680,19 @@ void HandleDebugCommand(HWND hwnd, WPARAM wParam) {
 
 // 注册窗口类
 BOOL RegisterWindowClass(HINSTANCE hInstance) {
-    WNDCLASSW wc = {0};
+    WNDCLASSEXW wc = {0};
+    wc.cbSize = sizeof(WNDCLASSEXW);
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = L"ExplorerWindowClass";
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    // 加载资源中的图标 (ID为1)
+    wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(1));
+    wc.hIconSm = (HICON)LoadImage(hInstance, MAKEINTRESOURCE(1), IMAGE_ICON, 
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
     
-    return RegisterClassW(&wc) != 0;
+    return RegisterClassExW(&wc) != 0;
 }
 
 // 创建主窗口
