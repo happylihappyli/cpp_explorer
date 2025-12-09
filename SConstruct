@@ -21,6 +21,9 @@ print(f"使用的编译器: {env['CXX']}")
 # 设置编译选项为C++17标准
 env.Append(CXXFLAGS=['-std=c++17'])
 
+# 添加UNICODE支持
+env.Append(CPPDEFINES=['UNICODE', '_UNICODE'])
+
 # 添加Windows特定的库
 env.Append(LIBS=['ole32', 'oleaut32', 'uuid', 'comctl32', 'shell32', 'user32', 'gdi32'])
 
@@ -35,7 +38,7 @@ env['OBJPREFIX'] = 'obj/'
 env['PROGPREFIX'] = ''
 env['PROGSUFFIX'] = '.exe'
 
-fixed_sources = ['src/explorer.cpp']
+fixed_sources = ['src/explorer.cpp', 'src/favorites.cpp', 'src/tree_utils.cpp', 'src/log.cpp', 'src/file_utils.cpp', 'src/notification_handlers.cpp', 'src/go_button_handler.cpp']
 
 fixed_program = env.Program(target='bin/myexplorer', source=fixed_sources)
 
