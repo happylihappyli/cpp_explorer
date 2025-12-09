@@ -16,4 +16,7 @@ int listDirectory(const WCHAR* path, FileInfo* files, int maxFiles);
 // 格式化文件大小
 void formatFileSize(ULONGLONG size, WCHAR* buffer, int bufferSize);
 
+// 获取可执行文件所在目录
+void getExecutableDirectory(WCHAR* buffer, int bufferSize);
+
 #endif // FILE_UTILS_H

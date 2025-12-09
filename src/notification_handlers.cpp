@@ -187,24 +187,52 @@ LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam) {
             LPNMTREEVIEWW pnmtv = (LPNMTREEVIEWW)lParam;
             HTREEITEM hItem = pnmtv->itemNew.hItem;
             if (hItem) {
-                WCHAR fullPath[MAX_PATH] = {0};
-                getNodeFullPath(g_treeView, hItem, fullPath, MAX_PATH);
-                LogMessage(L"[DEBUG] 节点选中改变: %s", fullPath);
-                
-                // 检查是否为收藏夹节点
+                // 获取项的数据
                 TVITEMW tvi = {0};
                 tvi.hItem = hItem;
                 tvi.mask = TVIF_PARAM;
                 TreeView_GetItem(g_treeView, &tvi);
                 
+                // 检查是否为收藏夹根节点
                 if (tvi.lParam == FAVORITE_ITEM_MARKER) {
                     // 设置特殊路径标识
                     lstrcpyW(g_currentPath, L"★ 收藏夹");
                     LogMessage(L"[DEBUG] 选中收藏夹根节点");
-                } else {
-                    setCurrentDirectory(fullPath);
+                    updateFileList();
+                    break;
+                } 
+                
+                // 检查是否为收藏夹项
+                BOOL isFavoriteItem = FALSE;
+                FavoriteItem* pFavoriteItem = NULL;
+                for (int i = 0; i < g_favoriteCount; i++) {
+                    if (tvi.lParam == (LPARAM)&g_favorites[i]) {
+                        isFavoriteItem = TRUE;
+                        pFavoriteItem = &g_favorites[i];
+                        break;
+                    }
                 }
-                updateFileList();
+                
+                if (isFavoriteItem && pFavoriteItem != NULL) {
+                    // 这是一个收藏夹项，直接跳转到对应的路径
+                    LogMessage(L"[DEBUG] 选中收藏夹项: %s -> %s", pFavoriteItem->name, pFavoriteItem->path);
+                    setCurrentDirectory(pFavoriteItem->path);
+                    updateFileList();
+                    
+                    // 单击同时也展开节点
+                    TreeView_Expand(g_treeView, hItem, TVE_EXPAND);
+                } else {
+                    // 普通目录节点，构建完整路径
+                    WCHAR fullPath[MAX_PATH] = {0};
+                    getNodeFullPath(g_treeView, hItem, fullPath, MAX_PATH);
+                    LogMessage(L"[DEBUG] 节点选中改变: %s", fullPath);
+                    
+                    // 确保不是在构建包含"★ 收藏夹"的无效路径
+                    if (wcsstr(fullPath, L"★ 收藏夹") == NULL) {
+                        setCurrentDirectory(fullPath);
+                        updateFileList();
+                    }
+                }
             }
             break;
         }

@@ -65,3 +65,20 @@ void formatFileSize(ULONGLONG size, WCHAR* buffer, int bufferSize) {
         swprintf_s(buffer, bufferSize, L"%.1f %s", fileSize, units[unitIndex]);
     }
 }
+
+// 获取可执行文件所在目录
+void getExecutableDirectory(WCHAR* buffer, int bufferSize) {
+    if (GetModuleFileNameW(NULL, buffer, bufferSize) == 0) {
+        // 失败时使用当前目录
+        GetCurrentDirectoryW(bufferSize, buffer);
+    } else {
+        // 移除文件名，只保留目录
+        PathRemoveFileSpecW(buffer);
+    }
+    
+    // 确保以反斜杠结尾
+    int len = lstrlenW(buffer);
+    if (len > 0 && buffer[len - 1] != L'\\') {
+        lstrcatW(buffer, L"\\");
+    }
+}

@@ -73,6 +73,14 @@ HWND g_addFavoriteButton = NULL;  // 添加收藏按钮
 WCHAR g_currentPath[MAX_PATH] = {0};
 HTREEITEM g_favoritesNode = NULL;  // 收藏夹节点
 
+// 地址栏原始窗口过程
+WNDPROC g_OriginalAddressBarProc = NULL;
+
+// 分隔条相关变量
+int g_splitterPos = 215; // 分隔条位置
+BOOL g_isDraggingSplitter = FALSE;
+#define SPLITTER_WIDTH 5 // 分隔条宽度
+
 // 自定义提示窗口相关变量
 HWND g_tooltipWindow = NULL;
 UINT_PTR g_tooltipTimer = 0;
@@ -229,6 +237,16 @@ void updateFileList() {
 
 
 
+// 地址栏子类化过程，用于处理回车键
+LRESULT CALLBACK AddressBarProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    if (uMsg == WM_KEYDOWN && wParam == VK_RETURN) {
+        // 当按下回车键时，调用HandleGoButtonClick
+        HandleGoButtonClick(GetParent(hwnd));
+        return 0;
+    }
+    return CallWindowProc(g_OriginalAddressBarProc, hwnd, uMsg, wParam, lParam);
+}
+
 // 处理WM_CREATE消息的函数
 void HandleCreateMessage(HWND hwnd) {
     // 初始化通用控件
@@ -250,6 +268,11 @@ void HandleCreateMessage(HWND hwnd) {
         250, 10, 450, 25,
         hwnd, NULL, NULL, NULL
     );
+    
+    // 子类化地址栏以处理回车键
+    if (g_addressBar) {
+        g_OriginalAddressBarProc = (WNDPROC)SetWindowLongPtr(g_addressBar, GWLP_WNDPROC, (LONG_PTR)AddressBarProc);
+    }
     
     // 创建后退按钮
     g_backButton = CreateWindowExW(
@@ -285,24 +308,22 @@ void HandleCreateMessage(HWND hwnd) {
         hwnd, NULL, NULL, NULL
     );
     
-    // 获取系统图标 - 使用高质量图标并处理透明度
+    // 获取系统图标 - 使用SHGFI_USEFILEATTRIBUTES获取标准图标
     SHFILEINFOW sfi = {0};
     
-    // 获取文件夹图标 - 使用真实的文件夹路径以确保获取正确图标
-    WCHAR systemDir[MAX_PATH];
-    GetWindowsDirectoryW(systemDir, MAX_PATH);
-    SHGetFileInfoW(systemDir, 0, &sfi, sizeof(sfi), 
-        SHGFI_ICON | SHGFI_SMALLICON | SHGFI_ADDOVERLAYS);
+    // 获取文件夹图标
+    SHGetFileInfoW(L"Folder", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi), 
+        SHGFI_USEFILEATTRIBUTES | SHGFI_ICON | SHGFI_SMALLICON);
     HICON hFolderIcon = sfi.hIcon;
 
     // 获取文件图标 - 使用.txt扩展名获取关联图标
     SHGetFileInfoW(L".txt", FILE_ATTRIBUTE_NORMAL, &sfi, sizeof(sfi), 
-        SHGFI_USEFILEATTRIBUTES | SHGFI_ICON | SHGFI_SMALLICON | SHGFI_ADDOVERLAYS);
+        SHGFI_USEFILEATTRIBUTES | SHGFI_ICON | SHGFI_SMALLICON);
     HICON hFileIcon = sfi.hIcon;
     
-    // 获取驱动器图标 - 使用小图标和更好的透明度 (使用C:\)
+    // 获取驱动器图标
     SHGetFileInfoW(L"C:\\", 0, &sfi, sizeof(sfi), 
-        SHGFI_ICON | SHGFI_SMALLICON | SHGFI_ADDOVERLAYS);
+        SHGFI_ICON | SHGFI_SMALLICON);
     HICON hDriveIcon = sfi.hIcon;
 
     // 创建图像列表用于TreeView - 使用系统主题适配的图标尺寸
@@ -310,17 +331,15 @@ void HandleCreateMessage(HWND hwnd) {
         ILC_COLOR32 | ILC_MASK, 2, 10);
     // 设置图像列表的背景色为白色
     ImageList_SetBkColor(hTreeImageList, RGB(255, 255, 255));
-    // 添加图标并自动处理掩码
+    // 添加图标
     ImageList_AddIcon(hTreeImageList, hFolderIcon);
     ImageList_AddIcon(hTreeImageList, hDriveIcon);
     SendMessageW(g_treeView, TVM_SETIMAGELIST, TVSIL_NORMAL, (LPARAM)hTreeImageList);
     
-    // 创建图像列表用于ListView - 使用系统主题适配的图标尺寸
+    // 创建图像列表用于ListView
     HIMAGELIST hListImageList = ImageList_Create(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 
         ILC_COLOR32 | ILC_MASK, 2, 10);
-    // 设置图像列表的背景色为白色
     ImageList_SetBkColor(hListImageList, RGB(255, 255, 255));
-    // 添加图标并自动处理掩码
     ImageList_AddIcon(hListImageList, hFolderIcon);
     ImageList_AddIcon(hListImageList, hFileIcon);
     SendMessageW(g_listView, LVM_SETIMAGELIST, LVSIL_SMALL, (LPARAM)hListImageList);
@@ -372,14 +391,27 @@ void HandleSizeMessage(HWND hwnd, WPARAM wParam, LPARAM lParam) {
     
     // 不再调整收藏夹按钮大小，已移除该按钮
     
+    int clientWidth = LOWORD(lParam);
+    int clientHeight = HIWORD(lParam);
+    
+    // 确保分隔条位置在合理范围内
+    if (g_splitterPos < 100) g_splitterPos = 100;
+    if (g_splitterPos > clientWidth - 100) g_splitterPos = clientWidth - 100;
+    
     // 调整TreeView大小 (左侧目录树)
     if (g_treeView) {
-        MoveWindow(g_treeView, 10, 50, 200, HIWORD(lParam) - 60, TRUE);
+        // TreeView从x=10开始，宽度为 g_splitterPos - 10
+        MoveWindow(g_treeView, 10, 50, g_splitterPos - 10, clientHeight - 60, TRUE);
     }
     
     // 调整ListView大小 (右侧文件列表)
     if (g_listView) {
-        MoveWindow(g_listView, 220, 50, LOWORD(lParam) - 230, HIWORD(lParam) - 60, TRUE);
+        // ListView从 g_splitterPos + SPLITTER_WIDTH 开始
+        int listViewX = g_splitterPos + SPLITTER_WIDTH;
+        int listViewWidth = clientWidth - listViewX - 10; // 右侧保留10像素边距
+        if (listViewWidth < 0) listViewWidth = 0;
+        
+        MoveWindow(g_listView, listViewX, 50, listViewWidth, clientHeight - 60, TRUE);
     }
 }
 
@@ -396,6 +428,68 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             break;
         }
         
+        case WM_SETCURSOR: {
+            // 获取鼠标位置（屏幕坐标）
+            POINT pt;
+            GetCursorPos(&pt);
+            // 转换为客户区坐标
+            ScreenToClient(hwnd, &pt);
+            
+            // 检查是否在分隔条区域
+            if (pt.x >= g_splitterPos && pt.x <= g_splitterPos + SPLITTER_WIDTH && pt.y > 50) {
+                SetCursor(LoadCursor(NULL, IDC_SIZEWE));
+                return TRUE;
+            }
+            break; // 继续默认处理
+        }
+        
+        case WM_LBUTTONDOWN: {
+            int x = LOWORD(lParam);
+            int y = HIWORD(lParam);
+            
+            // 检查是否点击了分隔条 (在Y轴50像素以下)
+            if (x >= g_splitterPos && x <= g_splitterPos + SPLITTER_WIDTH && y > 50) {
+                g_isDraggingSplitter = TRUE;
+                SetCapture(hwnd);
+                SetCursor(LoadCursor(NULL, IDC_SIZEWE));
+                return 0;
+            }
+            break;
+        }
+        
+        case WM_LBUTTONUP: {
+            if (g_isDraggingSplitter) {
+                g_isDraggingSplitter = FALSE;
+                ReleaseCapture();
+                return 0;
+            }
+            break;
+        }
+        
+        case WM_MOUSEMOVE: {
+            if (g_isDraggingSplitter) {
+                int x = LOWORD(lParam);
+                
+                // 更新分隔条位置
+                RECT rect;
+                GetClientRect(hwnd, &rect);
+                int clientWidth = rect.right - rect.left;
+                
+                // 限制拖动范围
+                if (x < 100) x = 100;
+                if (x > clientWidth - 100) x = clientWidth - 100;
+                
+                if (g_splitterPos != x) {
+                    g_splitterPos = x;
+                    // 强制调整布局
+                    HandleSizeMessage(hwnd, 0, MAKELPARAM(rect.right, rect.bottom));
+                    // 强制重绘
+                    InvalidateRect(hwnd, NULL, TRUE);
+                }
+            }
+            break;
+        }
+        
         case WM_COMMAND: {
             int wmId = LOWORD(wParam);
             if (wmId == IDM_DEBUG) {
@@ -409,6 +503,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             } else if ((HWND)lParam == g_backButton && HIWORD(wParam) == BN_CLICKED) {
                 HandleBackButtonClick();
             } else if (LOWORD(wParam) == 1 || LOWORD(wParam) == 2 || LOWORD(wParam) == 3) {
+                LogMessage(L"[DEBUG] WM_COMMAND 收到收藏夹命令: %d", LOWORD(wParam));
                 HandleFavoriteCommands(wParam);
             }
             break;
@@ -419,6 +514,44 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             return HandleNotificationMessages(hwnd, wParam, lParam);
         }
         break;
+        
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            
+            // 绘制分隔线
+            RECT rect;
+            GetClientRect(hwnd, &rect);
+            
+            // 创建灰色画笔
+            HPEN hPen = CreatePen(PS_SOLID, 1, RGB(200, 200, 200));
+            HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+            
+            // 绘制线条
+            int x = g_splitterPos + SPLITTER_WIDTH / 2;
+            MoveToEx(hdc, x, 50, NULL);
+            LineTo(hdc, x, rect.bottom);
+            
+            SelectObject(hdc, hOldPen);
+            DeleteObject(hPen);
+            
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+
+        case WM_DESTROY: {
+            // 保存收藏夹数据
+            LogMessage(L"[DEBUG] 保存收藏夹数据到文件...");
+            saveFavoritesToFile();
+            LogMessage(L"[DEBUG] 收藏夹数据保存完成，共 %d 项", g_favoriteCount);
+
+            // 保存树展开状态
+            LogMessage(L"[DEBUG] 保存树展开状态...");
+            saveTreeExpansionState();
+            
+            PostQuitMessage(0);
+            return 0;
+        }
     }
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
@@ -559,12 +692,19 @@ BOOL RegisterWindowClass(HINSTANCE hInstance) {
 
 // 创建主窗口
 HWND CreateMainWindow(HINSTANCE hInstance) {
+    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    int windowWidth = 1024;
+    int windowHeight = 768;
+    int x = (screenWidth - windowWidth) / 2;
+    int y = (screenHeight - windowHeight) / 2;
+
     HWND hwnd = CreateWindowExW(
         0,
         L"ExplorerWindowClass",
         L"我的资源管理器",
-        WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1024, 768,
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+        x, y, windowWidth, windowHeight,
         NULL, NULL, hInstance, NULL
     );
     
@@ -628,11 +768,6 @@ LRESULT CALLBACK TooltipWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
         }
         
         case WM_DESTROY: {
-            // 保存收藏夹数据
-            LogMessage(L"[DEBUG] 保存收藏夹数据到文件...");
-            saveFavoritesToFile();
-            LogMessage(L"[DEBUG] 收藏夹数据保存完成，共 %d 项", g_favoriteCount);
-            
             HBRUSH hBrush = (HBRUSH)GetClassLongPtr(hwnd, GCLP_HBRBACKGROUND);
             if (hBrush) DeleteObject(hBrush);
             return 0;
@@ -797,6 +932,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     LogMessage(L"开始加载目录树...");
     updateDirectoryTree();
     LogMessage(L"目录树加载完成");
+
+    // 恢复树展开状态
+    LogMessage(L"开始恢复树展开状态...");
+    restoreTreeExpansionState();
     
     // 加载初始文件列表
     LogMessage(L"开始加载文件列表...");

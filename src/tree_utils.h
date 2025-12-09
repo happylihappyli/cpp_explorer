@@ -25,4 +25,10 @@ void updateDirectoryTree();
 // 处理树节点展开
 void handleTreeItemExpanding(HWND treeView, HTREEITEM hItem);
 
+// 保存树展开状态
+void saveTreeExpansionState();
+
+// 恢复树展开状态
+void restoreTreeExpansionState();
+
 #endif // TREE_UTILS_H

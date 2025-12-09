@@ -489,6 +489,9 @@ void loadFavoritesFromFile() {
             if (*nameSrc == L'\\' && *(nameSrc + 1) == L'\"') {
                 *nameDst++ = L'\"';
                 nameSrc += 2;
+            } else if (*nameSrc == L'\\' && *(nameSrc + 1) == L'\\') {
+                *nameDst++ = L'\\';
+                nameSrc += 2;
             } else {
                 *nameDst++ = *nameSrc++;
             }
@@ -500,6 +503,9 @@ void loadFavoritesFromFile() {
         while (pathSrc < pathEnd && pathDst - g_favorites[g_favoriteCount].path < MAX_PATH - 1) {
             if (*pathSrc == L'\\' && *(pathSrc + 1) == L'\"') {
                 *pathDst++ = L'\"';
+                pathSrc += 2;
+            } else if (*pathSrc == L'\\' && *(pathSrc + 1) == L'\\') {
+                *pathDst++ = L'\\';
                 pathSrc += 2;
             } else {
                 *pathDst++ = *pathSrc++;
@@ -660,7 +666,17 @@ void editFavoriteName() {
     
     // 检查是否为收藏夹项
     FavoriteItem* favoriteItem = (FavoriteItem*)tvItem.lParam;
-    if (favoriteItem < g_favorites || favoriteItem >= g_favorites + g_favoriteCount) {
+    
+    // 更加宽松的验证，或者只依靠前面的逻辑
+    BOOL isValid = FALSE;
+    for(int i=0; i<g_favoriteCount; i++) {
+        if(&g_favorites[i] == favoriteItem) {
+            isValid = TRUE;
+            break;
+        }
+    }
+
+    if (!isValid) {
         LogMessage(L"[ERROR] editFavoriteName: 选中的不是收藏夹项");
         LogMessage(L"[DEBUG] favoriteItem指针: %p, g_favorites起始: %p, g_favoriteCount: %d", 
                    favoriteItem, g_favorites, g_favoriteCount);
@@ -712,9 +728,69 @@ void editFavoriteName() {
     LogMessage(L"[DEBUG] editFavoriteName: 函数执行完成");
 }
 
+// 对话框状态结构
+struct InputDialogState {
+    LPWSTR textBuffer;
+    int bufferSize;
+    BOOL* pUserPressedOK;
+    HWND hwndEdit;
+};
+
+// 对话框窗口过程
+LRESULT CALLBACK InputDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    InputDialogState* pState = (InputDialogState*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+
+    switch (uMsg) {
+    case WM_COMMAND:
+        if (pState) {
+            int id = LOWORD(wParam);
+            if (id == IDOK) {
+                if (pState->hwndEdit) {
+                    GetWindowTextW(pState->hwndEdit, pState->textBuffer, pState->bufferSize);
+                }
+                *(pState->pUserPressedOK) = TRUE;
+                DestroyWindow(hwnd);
+                return 0;
+            } else if (id == IDCANCEL) {
+                *(pState->pUserPressedOK) = FALSE;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+        }
+        break;
+
+    case WM_CLOSE:
+        if (pState && pState->pUserPressedOK) {
+             *(pState->pUserPressedOK) = FALSE;
+        }
+        DestroyWindow(hwnd);
+        return 0;
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+        
+    case WM_CTLCOLORSTATIC:
+        return (LRESULT)GetStockObject(WHITE_BRUSH);
+    }
+
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
 // 简单的输入对话框实现
 BOOL showInputDialog(HWND hwndOwner, LPCWSTR title, LPCWSTR prompt, LPWSTR text, int textSize) {
     LogMessage(L"[DEBUG] showInputDialog 开始执行，标题: %s，提示: %s", title, prompt);
+    
+    // 注册窗口类
+    WNDCLASSEXW wc = {0};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.lpfnWndProc = InputDlgProc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = L"ExplorerInputDlg";
+    
+    RegisterClassExW(&wc);
     
     // 获取屏幕尺寸
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
@@ -728,9 +804,13 @@ BOOL showInputDialog(HWND hwndOwner, LPCWSTR title, LPCWSTR prompt, LPWSTR text,
     int x = (screenWidth - dlgWidth) / 2;
     int y = (screenHeight - dlgHeight) / 2;
     
+    // 准备状态数据
+    BOOL userPressedOK = FALSE;
+    InputDialogState state = { text, textSize, &userPressedOK, NULL };
+    
     // 创建对话框窗口
     HWND hwndDlg = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, L"#32770", title,  // 使用Windows内置的对话框类
+        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, L"ExplorerInputDlg", title,
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         x, y, dlgWidth, dlgHeight,
         hwndOwner, NULL, GetModuleHandle(NULL), NULL);
@@ -739,6 +819,10 @@ BOOL showInputDialog(HWND hwndOwner, LPCWSTR title, LPCWSTR prompt, LPWSTR text,
         LogMessage(L"[ERROR] showInputDialog: 对话框窗口创建失败，错误码: %d", GetLastError());
         return FALSE;
     }
+    
+    // 设置状态指针
+    SetWindowLongPtr(hwndDlg, GWLP_USERDATA, (LONG_PTR)&state);
+    
     LogMessage(L"[DEBUG] showInputDialog: 对话框窗口创建成功，窗口句柄: %p", hwndDlg);
     
     // 创建字体 (Segoe UI, 9pt)
@@ -756,7 +840,7 @@ BOOL showInputDialog(HWND hwndOwner, LPCWSTR title, LPCWSTR prompt, LPWSTR text,
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         15, 15, 280, 20, hwndDlg, NULL, GetModuleHandle(NULL), NULL);
     
-    HWND hwndEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", text,
+    state.hwndEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", text,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
         15, 40, 275, 25, hwndDlg, (HMENU)1001, GetModuleHandle(NULL), NULL);
     
@@ -768,7 +852,7 @@ BOOL showInputDialog(HWND hwndOwner, LPCWSTR title, LPCWSTR prompt, LPWSTR text,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         170, 80, 70, 25, hwndDlg, (HMENU)IDCANCEL, GetModuleHandle(NULL), NULL);
     
-    if (!hwndPrompt || !hwndEdit || !hwndOK || !hwndCancel) {
+    if (!hwndPrompt || !state.hwndEdit || !hwndOK || !hwndCancel) {
         LogMessage(L"[ERROR] showInputDialog: 控件创建失败，错误码: %d", GetLastError());
         DestroyWindow(hwndDlg);
         if (hFont != GetStockObject(DEFAULT_GUI_FONT)) DeleteObject(hFont);
@@ -777,71 +861,20 @@ BOOL showInputDialog(HWND hwndOwner, LPCWSTR title, LPCWSTR prompt, LPWSTR text,
     
     // 设置字体
     SendMessageW(hwndPrompt, WM_SETFONT, (WPARAM)hFont, MAKELPARAM(TRUE, 0));
-    SendMessageW(hwndEdit, WM_SETFONT, (WPARAM)hFont, MAKELPARAM(TRUE, 0));
+    SendMessageW(state.hwndEdit, WM_SETFONT, (WPARAM)hFont, MAKELPARAM(TRUE, 0));
     SendMessageW(hwndOK, WM_SETFONT, (WPARAM)hFont, MAKELPARAM(TRUE, 0));
     SendMessageW(hwndCancel, WM_SETFONT, (WPARAM)hFont, MAKELPARAM(TRUE, 0));
     
     // 设置焦点到编辑框并选中所有文本
-    SetFocus(hwndEdit);
-    SendMessageW(hwndEdit, EM_SETSEL, 0, -1);
+    SetFocus(state.hwndEdit);
+    SendMessageW(state.hwndEdit, EM_SETSEL, 0, -1);
     
     // 设置对话框为模态窗口
     EnableWindow(hwndOwner, FALSE);
     
     // 消息循环
     MSG msg;
-    BOOL bRet;
-    BOOL userPressedOK = FALSE;
-    
-    while ((bRet = GetMessageW(&msg, NULL, 0, 0)) != 0) {
-        if (bRet == -1) {
-            break;
-        }
-        
-        if (!IsWindow(hwndDlg)) {
-            break;
-        }
-        
-        // 处理对话框特定消息
-        if (msg.hwnd == hwndDlg) {
-            if (msg.message == WM_COMMAND) {
-                int controlID = LOWORD(msg.wParam);
-                
-                if (controlID == IDOK) {
-                    GetWindowTextW(hwndEdit, text, textSize);
-                    userPressedOK = TRUE;
-                    DestroyWindow(hwndDlg);
-                    break;
-                } else if (controlID == IDCANCEL) {
-                    userPressedOK = FALSE;
-                    DestroyWindow(hwndDlg);
-                    break;
-                }
-            } else if (msg.message == WM_CLOSE) {
-                userPressedOK = FALSE;
-                DestroyWindow(hwndDlg);
-                break;
-            }
-        }
-        
-        // 处理Enter和Esc键
-        if (msg.message == WM_KEYDOWN) {
-            if (msg.wParam == VK_RETURN) {
-                // 如果焦点在按钮上，按Enter会触发按钮点击
-                // 这里简单处理：如果在编辑框中按Enter，视为点击确定
-                 if (GetFocus() == hwndEdit) {
-                    GetWindowTextW(hwndEdit, text, textSize);
-                    userPressedOK = TRUE;
-                    DestroyWindow(hwndDlg);
-                    break;
-                 }
-            } else if (msg.wParam == VK_ESCAPE) {
-                userPressedOK = FALSE;
-                DestroyWindow(hwndDlg);
-                break;
-            }
-        }
-        
+    while (GetMessageW(&msg, NULL, 0, 0)) {
         if (!IsDialogMessageW(hwndDlg, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);

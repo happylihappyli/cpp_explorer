@@ -1,0 +1,36 @@
+// 资源文件
+#include <windows.h>
+
+// 图标资源
+// ID 101 是常用的图标ID，但第一个图标通常会被用作应用程序图标
+1 ICON "app.ico"
+
+// 版本信息 (可选，但推荐)
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS__WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0" // 中文(简体), Unicode
+        BEGIN
+            VALUE "CompanyName", "MyExplorer"
+            VALUE "FileDescription", "C++ Resource Explorer"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "myexplorer"
+            VALUE "LegalCopyright", "Copyright (C) 2024"
+            VALUE "OriginalFilename", "myexplorer.exe"
+            VALUE "ProductName", "MyExplorer"
+            VALUE "ProductVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200 // 中文(简体), Unicode
+    END
+END
