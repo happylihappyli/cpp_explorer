@@ -3,3 +3,4 @@ bin/layout_state.ini
 /test
 /obj
 /.vscode
+bin/tree_state.txt

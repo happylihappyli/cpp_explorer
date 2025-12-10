@@ -31,4 +31,7 @@ void saveTreeExpansionState();
 // 恢复树展开状态
 void restoreTreeExpansionState();
 
+// 查找子节点
+HTREEITEM findChildNode(HWND treeView, HTREEITEM hParent, const WCHAR* name);
+
 #endif // TREE_UTILS_H

@@ -5,6 +5,8 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shlwapi.h>
+#include <shlobj.h>
+#include <objbase.h>
 #include <wchar.h>
 #include "log.h"
 
@@ -23,6 +25,30 @@ void setCurrentDirectory(const WCHAR* path);
 void updateFileList();
 void loadFavoritesIntoTree();
 
+// 创建快捷方式
+HRESULT CreateLink(LPCWSTR lpszPathObj, LPCWSTR lpszPathLink, LPCWSTR lpszDesc)
+{
+    HRESULT hres;
+    IShellLink* psl;
+
+    hres = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (LPVOID*)&psl);
+    if (SUCCEEDED(hres))
+    {
+        IPersistFile* ppf;
+
+        psl->SetPath(lpszPathObj);
+        psl->SetDescription(lpszDesc);
+
+        hres = psl->QueryInterface(IID_IPersistFile, (LPVOID*)&ppf);
+        if (SUCCEEDED(hres))
+        {
+            hres = ppf->Save(lpszPathLink, TRUE);
+            ppf->Release();
+        }
+        psl->Release();
+    }
+    return hres;
+}
 
 LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam) {
     LPNMHDR nmhdr = (LPNMHDR)lParam;
@@ -44,7 +70,77 @@ LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam) {
             // 处理右键点击事件
             POINT pt;
             GetCursorPos(&pt);
+
+            // 处理ListView右键点击
+            if (nmhdr->hwndFrom == g_listView) {
+                LPNMITEMACTIVATE lpnmitem = (LPNMITEMACTIVATE)lParam;
+                if (lpnmitem->iItem != -1) {
+                    // 获取选中项的文本
+                    WCHAR itemName[MAX_PATH] = {0};
+                    LVITEMW item = {0};
+                    item.iItem = lpnmitem->iItem;
+                    item.iSubItem = 0;
+                    item.mask = LVIF_TEXT;
+                    item.pszText = itemName;
+                    item.cchTextMax = MAX_PATH;
+                    SendMessageW(g_listView, LVM_GETITEMW, 0, (LPARAM)&item);
+                    
+                    // 获取扩展名
+                    WCHAR* ext = PathFindExtensionW(itemName);
+                    if (lstrcmpiW(ext, L".exe") == 0) {
+                        // 创建弹出菜单
+                        HMENU hPopupMenu = CreatePopupMenu();
+                        AppendMenuW(hPopupMenu, MF_STRING, 201, L"固定到开始菜单");
+                        AppendMenuW(hPopupMenu, MF_STRING, 202, L"取消固定到开始菜单");
+                        
+                        // 显示菜单并获取选择的命令ID
+                        int cmd = TrackPopupMenu(hPopupMenu, TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, hwnd, NULL);
+                        DestroyMenu(hPopupMenu);
+                        
+                        // 构造完整路径
+                        WCHAR fullPath[MAX_PATH];
+                        lstrcpyW(fullPath, g_currentPath);
+                        if (fullPath[lstrlenW(fullPath) - 1] != L'\\') {
+                            lstrcatW(fullPath, L"\\");
+                        }
+                        lstrcatW(fullPath, itemName);
+                        
+                        // 获取开始菜单程序目录
+                        WCHAR startMenuPath[MAX_PATH];
+                        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_PROGRAMS, NULL, 0, startMenuPath))) {
+                            // 构造快捷方式路径
+                            WCHAR linkPath[MAX_PATH];
+                            lstrcpyW(linkPath, startMenuPath);
+                            lstrcatW(linkPath, L"\\");
+                            
+                            // 获取不带扩展名的文件名
+                            WCHAR nameWithoutExt[MAX_PATH];
+                            lstrcpyW(nameWithoutExt, itemName);
+                            PathRemoveExtensionW(nameWithoutExt);
+                            
+                            lstrcatW(linkPath, nameWithoutExt);
+                            lstrcatW(linkPath, L".lnk");
+                            
+                            if (cmd == 201) { // 固定到开始菜单
+                                if (SUCCEEDED(CreateLink(fullPath, linkPath, L"Pinned by MyExplorer"))) {
+                                    MessageBoxW(hwnd, L"已固定到开始菜单", L"成功", MB_OK | MB_ICONINFORMATION);
+                                } else {
+                                    MessageBoxW(hwnd, L"固定到开始菜单失败", L"错误", MB_OK | MB_ICONERROR);
+                                }
+                            } else if (cmd == 202) { // 取消固定
+                                if (DeleteFileW(linkPath)) {
+                                    MessageBoxW(hwnd, L"已取消固定", L"成功", MB_OK | MB_ICONINFORMATION);
+                                } else {
+                                    MessageBoxW(hwnd, L"取消固定失败或未找到快捷方式", L"错误", MB_OK | MB_ICONERROR);
+                                }
+                            }
+                        }
+                    }
+                }
+                break;
+            }
             
+            // 处理TreeView右键点击
             // 获取点击位置的项
             TVHITTESTINFO ht = {};  // 修复编译器警告
             ht.pt = pt;

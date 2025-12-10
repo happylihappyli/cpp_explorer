@@ -862,7 +862,52 @@ void HandleTreeViewDoubleClick(HWND hwnd, HWND mainWindow) {
             FavoriteItem* favoriteItem = (FavoriteItem*)tvi.lParam;
             if (favoriteItem >= g_favorites && favoriteItem < g_favorites + g_favoriteCount) {
                 // 是收藏夹项，使用其存储的路径
-                setCurrentDirectory(favoriteItem->path);
+            WCHAR targetPath[MAX_PATH];
+            lstrcpyW(targetPath, favoriteItem->path);
+            setCurrentDirectory(targetPath);
+
+            // 自动展开目录树并跳转
+            // 解析路径并展开树
+            if (targetPath[0] != 0 && targetPath[1] == L':') {
+                WCHAR drive[4] = {0};
+                drive[0] = targetPath[0];
+                drive[1] = targetPath[1];
+                drive[2] = L'\\';
+                drive[3] = L'\0';
+                
+                // 查找驱动器节点
+                HTREEITEM hCurrent = findChildNode(g_treeView, NULL, drive);
+                if (hCurrent) {
+                    TreeView_Expand(g_treeView, hCurrent, TVE_EXPAND);
+                    
+                    // 复制路径用于分词
+                    WCHAR pathCopy[MAX_PATH];
+                    lstrcpyW(pathCopy, targetPath);
+                    
+                    // 跳过驱动器部分 (E:\)
+                    WCHAR* start = wcschr(pathCopy, L'\\');
+                    if (start && *(start + 1)) {
+                        start++; // 指向第一个文件夹字符
+                        
+                        WCHAR* context = NULL;
+                        WCHAR* nextComp = wcstok_s(start, L"\\", &context);
+                        while (nextComp) {
+                            HTREEITEM hChild = findChildNode(g_treeView, hCurrent, nextComp);
+                            if (hChild) {
+                                hCurrent = hChild;
+                                TreeView_Expand(g_treeView, hCurrent, TVE_EXPAND);
+                                nextComp = wcstok_s(NULL, L"\\", &context);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // 选中最终节点
+                    TreeView_Select(g_treeView, hCurrent, TVGN_CARET);
+                    TreeView_EnsureVisible(g_treeView, hCurrent);
+                }
+            }
             } else {
                 // 普通目录节点
                 setCurrentDirectory(fullPath);

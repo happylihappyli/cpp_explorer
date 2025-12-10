@@ -20,7 +20,7 @@ BEGIN
         BLOCK "080404b0" // 中文(简体), Unicode
         BEGIN
             VALUE "CompanyName", "MyExplorer"
-            VALUE "FileDescription", "C++ Resource Explorer"
+            VALUE "FileDescription", "MyExplorer"
             VALUE "FileVersion", "1.0.0.0"
             VALUE "InternalName", "myexplorer"
             VALUE "LegalCopyright", "Copyright (C) 2024"

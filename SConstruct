@@ -26,7 +26,7 @@ env.Append(CXXFLAGS=['-std=c++17'])
 env.Append(CPPDEFINES=['UNICODE', '_UNICODE'])
 
 # 添加Windows特定的库
-env.Append(LIBS=['ole32', 'oleaut32', 'uuid', 'comctl32', 'shell32', 'user32', 'gdi32'])
+env.Append(LIBS=['ole32', 'oleaut32', 'uuid', 'comctl32', 'shell32', 'user32', 'gdi32', 'shlwapi'])
 
 # 添加警告标志
 env.Append(CXXFLAGS=['-Wall'])
