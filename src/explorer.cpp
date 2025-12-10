@@ -376,6 +376,11 @@ void HandleCreateMessage(HWND hwnd) {
 
 // 处理WM_SIZE消息的函数
 void HandleSizeMessage(HWND hwnd, WPARAM wParam, LPARAM lParam) {
+    // 忽略最小化消息
+    if (wParam == SIZE_MINIMIZED) {
+        return;
+    }
+
     // 调整控件大小
     if (g_backButton) {
         MoveWindow(g_backButton, 170, 10, 70, 25, TRUE);
@@ -415,10 +420,55 @@ void HandleSizeMessage(HWND hwnd, WPARAM wParam, LPARAM lParam) {
     }
 }
 
+// 保存布局状态
+void saveLayoutState() {
+    // 获取可执行文件目录
+    WCHAR exePath[MAX_PATH];
+    getExecutableDirectory(exePath, MAX_PATH);
+    
+    // 构造完整路径
+    WCHAR filePath[MAX_PATH];
+    lstrcpyW(filePath, exePath);
+    lstrcatW(filePath, L"layout_state.ini");
+    
+    FILE* fp = NULL;
+    errno_t err = _wfopen_s(&fp, filePath, L"w, ccs=UTF-8");
+    if (err == 0 && fp) {
+        fwprintf(fp, L"SplitterPos=%d\n", g_splitterPos);
+        fclose(fp);
+    }
+}
+
+// 加载布局状态
+void loadLayoutState() {
+    // 获取可执行文件目录
+    WCHAR exePath[MAX_PATH];
+    getExecutableDirectory(exePath, MAX_PATH);
+    
+    // 构造完整路径
+    WCHAR filePath[MAX_PATH];
+    lstrcpyW(filePath, exePath);
+    lstrcatW(filePath, L"layout_state.ini");
+    
+    FILE* fp = NULL;
+    errno_t err = _wfopen_s(&fp, filePath, L"r, ccs=UTF-8");
+    if (err == 0 && fp) {
+        WCHAR line[256];
+        if (fgetws(line, 256, fp)) {
+            if (wcsncmp(line, L"SplitterPos=", 12) == 0) {
+                g_splitterPos = _wtoi(line + 12);
+                if (g_splitterPos < 100) g_splitterPos = 100;
+            }
+        }
+        fclose(fp);
+    }
+}
+
 // 窗口过程函数
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
         case WM_CREATE: {
+            loadLayoutState(); // 加载布局状态
             HandleCreateMessage(hwnd);
             break;
         }
@@ -548,6 +598,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             // 保存树展开状态
             LogMessage(L"[DEBUG] 保存树展开状态...");
             saveTreeExpansionState();
+
+            // 保存布局状态
+            saveLayoutState();
             
             PostQuitMessage(0);
             return 0;
