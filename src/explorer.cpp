@@ -4,6 +4,8 @@
 #include <shellapi.h>
 #include <wchar.h>
 #include <stdio.h>
+#include <vector>
+#include <string>
 #include "favorites.h"
 #include "notification_handlers.h"
 #include "file_utils.h"
@@ -14,6 +16,21 @@
 #pragma comment(lib, "shell32.lib")
 
 #define IDM_DEBUG 1001
+#define WM_APP_DIRSIZE (WM_APP + 1)
+
+struct DirSizeResult {
+    WCHAR parent[MAX_PATH];
+    WCHAR name[MAX_PATH];
+    ULONGLONG size;
+};
+
+struct DirSizeTask {
+    WCHAR parent[MAX_PATH];
+    std::vector<std::wstring> names;
+};
+
+DWORD WINAPI DirSizeWorker(LPVOID lpParam);
+void UpdateListViewDirSize(const WCHAR* parentPath, const WCHAR* name, ULONGLONG size);
 
 // 控制台窗口相关函数
 // 检测是否在控制台环境中运行
@@ -184,8 +201,9 @@ void updateFileList() {
         FileInfo files[1000];
         int fileCount = listDirectory(g_currentPath, files, 1000);
         LogMessage(L"[DEBUG] 获取到 %d 个文件/文件夹", fileCount);
-        
+
         // 添加项目到ListView
+        std::vector<std::wstring> pendingDirs;
         for (int i = 0; i < fileCount; ++i) {
             LVITEMW item = {0};
             item.iItem = i;
@@ -202,7 +220,20 @@ void updateFileList() {
                 // 设置大小列
                 WCHAR sizeText[64];
                 if (files[i].isDirectory) {
-                    lstrcpyW(sizeText, L"-");
+                    // 目录大小：先尝试读取缓存，否则后台线程计算
+                    WCHAR dirPath[MAX_PATH] = {0};
+                    lstrcpyW(dirPath, g_currentPath);
+                    if (dirPath[lstrlenW(dirPath) - 1] != L'\\') {
+                        lstrcatW(dirPath, L"\\");
+                    }
+                    lstrcatW(dirPath, files[i].name);
+                    ULONGLONG dirSize = 0;
+                    if (getCachedDirSize(dirPath, &dirSize)) {
+                        formatFileSize(dirSize, sizeText, 64);
+                    } else {
+                        lstrcpyW(sizeText, L"计算中...");
+                        pendingDirs.push_back(files[i].name);
+                    }
                 } else {
                     formatFileSize(files[i].size, sizeText, 64);
                 }
@@ -224,6 +255,14 @@ void updateFileList() {
             }
         }
         
+        // 启动后台线程计算未命中缓存的目录大小
+        if (!pendingDirs.empty()) {
+            DirSizeTask* task = new DirSizeTask();
+            lstrcpyW(task->parent, g_currentPath);
+            task->names = std::move(pendingDirs);
+            CreateThread(NULL, 0, DirSizeWorker, task, 0, NULL);
+        }
+
         LogMessage(L"[DEBUG] updateFileList 完成，共添加 %d 个项目", fileCount);
     }
     
@@ -586,6 +625,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             DeleteObject(hPen);
             
             EndPaint(hwnd, &ps);
+            return 0;
+        }
+
+        case WM_APP_DIRSIZE: {
+            DirSizeResult* res = (DirSizeResult*)lParam;
+            if (res) {
+                if (lstrcmpiW(res->parent, g_currentPath) == 0) {
+                    UpdateListViewDirSize(res->parent, res->name, res->size);
+                }
+                delete res;
+            }
             return 0;
         }
 
@@ -1059,5 +1109,49 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // 清理COM
     CoUninitialize();
     
+    return 0;
+}
+void UpdateListViewDirSize(const WCHAR* parentPath, const WCHAR* name, ULONGLONG size) {
+    LVFINDINFOW find = {0};
+    find.flags = LVFI_STRING;
+    find.psz = (LPWSTR)name;
+    int idx = (int)SendMessageW(g_listView, LVM_FINDITEMW, (WPARAM)-1, (LPARAM)&find);
+    if (idx != -1) {
+        WCHAR buf[64];
+        formatFileSize(size, buf, 64);
+        LVITEMW subItem = {0};
+        subItem.iItem = idx;
+        subItem.iSubItem = 1;
+        subItem.mask = LVIF_TEXT;
+        subItem.pszText = buf;
+        SendMessageW(g_listView, LVM_SETITEMW, 0, (LPARAM)&subItem);
+    }
+}
+
+DWORD WINAPI DirSizeWorker(LPVOID lpParam) {
+    DirSizeTask* task = (DirSizeTask*)lpParam;
+    if (!task) return 0;
+    for (const auto& name : task->names) {
+        WCHAR fullPath[MAX_PATH] = {0};
+        lstrcpyW(fullPath, task->parent);
+        if (fullPath[lstrlenW(fullPath) - 1] != L'\\') {
+            lstrcatW(fullPath, L"\\");
+        }
+        lstrcatW(fullPath, name.c_str());
+
+        ULONGLONG dirSize = 0;
+        if (!getCachedDirSize(fullPath, &dirSize)) {
+            dirSize = computeDirectorySize(fullPath);
+            setCachedDirSize(fullPath, dirSize);
+        }
+
+        DirSizeResult* res = new DirSizeResult();
+        lstrcpyW(res->parent, task->parent);
+        lstrcpyW(res->name, name.c_str());
+        res->size = dirSize;
+        PostMessageW(g_mainWindow, WM_APP_DIRSIZE, 0, (LPARAM)res);
+        // 注意：使用全局窗口句柄
+    }
+    delete task;
     return 0;
 }

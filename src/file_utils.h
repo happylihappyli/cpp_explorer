@@ -19,4 +19,13 @@ void formatFileSize(ULONGLONG size, WCHAR* buffer, int bufferSize);
 // 获取可执行文件所在目录
 void getExecutableDirectory(WCHAR* buffer, int bufferSize);
 
+// 计算目录累计大小（递归）
+ULONGLONG computeDirectorySize(const WCHAR* path);
+
+// 从本地缓存读取目录大小
+BOOL getCachedDirSize(const WCHAR* path, ULONGLONG* sizeOut);
+
+// 写入本地缓存目录大小
+void setCachedDirSize(const WCHAR* path, ULONGLONG size);
+
 #endif // FILE_UTILS_H
