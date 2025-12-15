@@ -11,26 +11,51 @@
 #include "file_utils.h"
 #include "tree_utils.h"
 #include "log.h"
+#include "settings.h"
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
 
 #define IDM_DEBUG 1001
 #define WM_APP_DIRSIZE (WM_APP + 1)
+#define WM_APP_LISTITEM (WM_APP + 2)
+#define WM_APP_LISTDONE (WM_APP + 3)
+#define WM_APP_UPDATE_COUNT (WM_APP + 4)
+#define WM_APP_SORTDONE (WM_APP + 5)
+#define IDT_UI_BATCH 100
+
 
 struct DirSizeResult {
     WCHAR parent[MAX_PATH];
     WCHAR name[MAX_PATH];
     ULONGLONG size;
+    BOOL isPartial;
 };
 
 struct DirSizeTask {
     WCHAR parent[MAX_PATH];
     std::vector<std::wstring> names;
+    LONG generation;
 };
 
+struct ListEnumTask {
+    WCHAR parent[MAX_PATH];
+    LONG generation;
+};
+
+struct ListItemResult {
+    WCHAR parent[MAX_PATH];
+    WCHAR name[MAX_PATH];
+    BOOL isDir;
+    ULONGLONG size;
+    FILETIME created;
+    FILETIME modified;
+};
+
+
 DWORD WINAPI DirSizeWorker(LPVOID lpParam);
-void UpdateListViewDirSize(const WCHAR* parentPath, const WCHAR* name, ULONGLONG size);
+void UpdateListViewDirSize(const WCHAR* parentPath, const WCHAR* name, ULONGLONG size, BOOL isPartial);
+DWORD WINAPI ListEnumWorker(LPVOID lpParam);
 
 // 控制台窗口相关函数
 // 检测是否在控制台环境中运行
@@ -85,6 +110,10 @@ HWND g_listView = NULL;  // 右侧文件列表
 HWND g_addressBar = NULL;
 HWND g_goButton = NULL;
 HWND g_backButton = NULL;
+HWND g_forwardButton = NULL;
+HWND g_upButton = NULL;
+HWND g_openInExplorerButton = NULL;
+HWND g_settingsButton = NULL;
 HWND g_addFavoriteButton = NULL;  // 添加收藏按钮
 // 移除了单独的收藏夹面板，将其集成到目录树中
 WCHAR g_currentPath[MAX_PATH] = {0};
@@ -101,6 +130,12 @@ BOOL g_isDraggingSplitter = FALSE;
 // 自定义提示窗口相关变量
 HWND g_tooltipWindow = NULL;
 UINT_PTR g_tooltipTimer = 0;
+static LONG g_dirSizeGen = 0;
+CRITICAL_SECTION g_fileListLock;
+std::vector<ItemSortData> g_fileList;
+BOOL g_enumInProgress = FALSE;
+BOOL g_timerActive = FALSE;
+BOOL g_sorting = FALSE;
 
 // 函数声明
 void HandleGoButtonClick(HWND hwnd);
@@ -121,6 +156,7 @@ void getCurrentDirectory(WCHAR* buffer, DWORD bufferSize) {
 void setCurrentDirectory(const WCHAR* path) {
     SetCurrentDirectoryW(path);
     lstrcpyW(g_currentPath, path);
+    InterlockedIncrement(&g_dirSizeGen);
     
     // 更新地址栏
     if (g_addressBar) {
@@ -148,9 +184,21 @@ void updateFileList() {
         return;
     }
     
-    // 清空现有项目
     LogMessage(L"[DEBUG] 清空ListView现有项目");
-    SendMessageW(g_listView, LVM_DELETEALLITEMS, 0, 0);
+    // Virtual List: Reset count to 0
+    SendMessageW(g_listView, LVM_SETITEMCOUNT, 0, LVSICF_NOINVALIDATEALL);
+    InvalidateRect(g_listView, NULL, TRUE);
+    UpdateWindow(g_listView);
+    
+    EnterCriticalSection(&g_fileListLock);
+    g_fileList.clear();
+    LeaveCriticalSection(&g_fileListLock);
+
+    g_enumInProgress = TRUE;
+    if (g_timerActive) {
+        KillTimer(g_mainWindow, IDT_UI_BATCH);
+        g_timerActive = FALSE;
+    }
     
     // 检查当前路径是否为收藏夹路径的特殊情况
     BOOL isFavoritesPath = FALSE;
@@ -161,112 +209,33 @@ void updateFileList() {
     
     if (isFavoritesPath) {
         // 显示收藏夹项作为文件列表
+        EnterCriticalSection(&g_fileListLock);
         for (int i = 0; i < g_favoriteCount; ++i) {
-            LVITEMW item = {0};
-            item.iItem = i;
-            item.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
-            item.pszText = g_favorites[i].name;
-            item.lParam = i; // 存储索引以便后续查找
-            item.iImage = 0; // 文件夹图标
-                
-            int index = SendMessageW(g_listView, LVM_INSERTITEMW, 0, (LPARAM)&item);
-            
-            if (index >= 0) {
-                LogMessage(L"[DEBUG] 添加收藏夹项目: %s", g_favorites[i].name);
-                
-                // 设置大小列
-                WCHAR sizeText[64];
-                lstrcpyW(sizeText, L"-");
-                
-                LVITEMW subItem = {0};
-                subItem.iItem = index;
-                subItem.iSubItem = 1;
-                subItem.mask = LVIF_TEXT;
-                subItem.pszText = sizeText;
-                SendMessageW(g_listView, LVM_SETITEMW, 0, (LPARAM)&subItem);
-                
-                // 设置类型列
-                LPCWSTR typeText = L"收藏夹项";
-                subItem.iSubItem = 2;
-                subItem.pszText = (LPWSTR)typeText;
-                SendMessageW(g_listView, LVM_SETITEMW, 0, (LPARAM)&subItem);
-            } else {
-                LogMessage(L"[DEBUG] 添加收藏夹项目失败: %s", g_favorites[i].name);
-            }
+            ItemSortData item;
+            item.name = g_favorites[i].name;
+            item.isDir = TRUE;
+            item.sizeNumeric = 0;
+            item.created.dwLowDateTime = 0;
+            item.created.dwHighDateTime = 0;
+            item.modified.dwLowDateTime = 0;
+            item.modified.dwHighDateTime = 0;
+            g_fileList.push_back(item);
         }
+        LeaveCriticalSection(&g_fileListLock);
+
+        SendMessageW(g_listView, LVM_SETITEMCOUNT, (WPARAM)g_favoriteCount, LVSICF_NOINVALIDATEALL);
+        InvalidateRect(g_listView, NULL, TRUE);
         
         LogMessage(L"[DEBUG] updateFileList 完成，共添加 %d 个收藏夹项目", g_favoriteCount);
+        g_enumInProgress = FALSE;
     } else {
-        // 获取文件列表
-        FileInfo files[1000];
-        int fileCount = listDirectory(g_currentPath, files, 1000);
-        LogMessage(L"[DEBUG] 获取到 %d 个文件/文件夹", fileCount);
-
-        // 添加项目到ListView
-        std::vector<std::wstring> pendingDirs;
-        for (int i = 0; i < fileCount; ++i) {
-            LVITEMW item = {0};
-            item.iItem = i;
-            item.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
-            item.pszText = files[i].name;
-            item.lParam = i; // 存储索引以便后续查找
-            item.iImage = files[i].isDirectory ? 0 : 1; // 0为文件夹图标，1为文件图标
-                    
-            int index = SendMessageW(g_listView, LVM_INSERTITEMW, 0, (LPARAM)&item);
-            
-            if (index >= 0) {
-                LogMessage(L"[DEBUG] 添加项目: %s (类型: %s)", files[i].name, files[i].isDirectory ? L"文件夹" : L"文件");
-                
-                // 设置大小列
-                WCHAR sizeText[64];
-                if (files[i].isDirectory) {
-                    // 目录大小：先尝试读取缓存，否则后台线程计算
-                    WCHAR dirPath[MAX_PATH] = {0};
-                    lstrcpyW(dirPath, g_currentPath);
-                    if (dirPath[lstrlenW(dirPath) - 1] != L'\\') {
-                        lstrcatW(dirPath, L"\\");
-                    }
-                    lstrcatW(dirPath, files[i].name);
-                    ULONGLONG dirSize = 0;
-                    if (getCachedDirSize(dirPath, &dirSize)) {
-                        formatFileSize(dirSize, sizeText, 64);
-                    } else {
-                        lstrcpyW(sizeText, L"计算中...");
-                        pendingDirs.push_back(files[i].name);
-                    }
-                } else {
-                    formatFileSize(files[i].size, sizeText, 64);
-                }
-                
-                LVITEMW subItem = {0};
-                subItem.iItem = index;
-                subItem.iSubItem = 1;
-                subItem.mask = LVIF_TEXT;
-                subItem.pszText = sizeText;
-                SendMessageW(g_listView, LVM_SETITEMW, 0, (LPARAM)&subItem);
-                
-                // 设置类型列
-                LPCWSTR typeText = files[i].isDirectory ? L"文件夹" : L"文件";
-                subItem.iSubItem = 2;
-                subItem.pszText = (LPWSTR)typeText;
-                SendMessageW(g_listView, LVM_SETITEMW, 0, (LPARAM)&subItem);
-            } else {
-                LogMessage(L"[DEBUG] 添加项目失败: %s", files[i].name);
-            }
-        }
-        
-        // 启动后台线程计算未命中缓存的目录大小
-        if (!pendingDirs.empty()) {
-            DirSizeTask* task = new DirSizeTask();
-            lstrcpyW(task->parent, g_currentPath);
-            task->names = std::move(pendingDirs);
-            CreateThread(NULL, 0, DirSizeWorker, task, 0, NULL);
-        }
-
-        LogMessage(L"[DEBUG] updateFileList 完成，共添加 %d 个项目", fileCount);
+        // 异步枚举目录项
+        ListEnumTask* t = new ListEnumTask();
+        lstrcpyW(t->parent, g_currentPath);
+        t->generation = g_dirSizeGen;
+        CreateThread(NULL, 0, ListEnumWorker, t, 0, NULL);
+        LogMessage(L"[DEBUG] 列表异步枚举已启动");
     }
-    
-    // 简化代码，移除重复的图标获取逻辑
 }
 
 // 创建收藏夹节点
@@ -288,6 +257,7 @@ LRESULT CALLBACK AddressBarProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 
 // 处理WM_CREATE消息的函数
 void HandleCreateMessage(HWND hwnd) {
+    InitializeCriticalSection(&g_fileListLock);
     // 初始化通用控件
     INITCOMMONCONTROLSEX icex;
     icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
@@ -300,11 +270,35 @@ void HandleCreateMessage(HWND hwnd) {
         SendMessage(hwnd, WM_SETFONT, (WPARAM)hFont, MAKELPARAM(TRUE, 0));
     }
     
+    // 创建后退按钮
+    g_backButton = CreateWindowExW(
+        0, L"BUTTON", L"←",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        10, 10, 40, 25,
+        hwnd, NULL, NULL, NULL
+    );
+    
+    // 创建前进按钮
+    g_forwardButton = CreateWindowExW(
+        0, L"BUTTON", L"→",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        55, 10, 40, 25,
+        hwnd, NULL, NULL, NULL
+    );
+
+    // 创建向上按钮
+    g_upButton = CreateWindowExW(
+        0, L"BUTTON", L"↑",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        100, 10, 40, 25,
+        hwnd, NULL, NULL, NULL
+    );
+
     // 创建地址栏
     g_addressBar = CreateWindowExW(
         0, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-        250, 10, 450, 25,
+        150, 10, 450, 25,
         hwnd, NULL, NULL, NULL
     );
     
@@ -313,19 +307,27 @@ void HandleCreateMessage(HWND hwnd) {
         g_OriginalAddressBarProc = (WNDPROC)SetWindowLongPtr(g_addressBar, GWLP_WNDPROC, (LONG_PTR)AddressBarProc);
     }
     
-    // 创建后退按钮
-    g_backButton = CreateWindowExW(
-        0, L"BUTTON", L"← 后退",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        170, 10, 70, 25,
-        hwnd, NULL, NULL, NULL
-    );
-    
     // 创建前往按钮
     g_goButton = CreateWindowExW(
         0, L"BUTTON", L"前往",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        710, 10, 80, 25,
+        610, 10, 60, 25,
+        hwnd, NULL, NULL, NULL
+    );
+
+    // 创建Open Explorer按钮
+    g_openInExplorerButton = CreateWindowExW(
+        0, L"BUTTON", L"打开",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        680, 10, 60, 25,
+        hwnd, NULL, NULL, NULL
+    );
+
+    // 创建设置按钮
+    g_settingsButton = CreateWindowExW(
+        0, L"BUTTON", L"设置",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        750, 10, 60, 25,
         hwnd, NULL, NULL, NULL
     );
     
@@ -342,7 +344,7 @@ void HandleCreateMessage(HWND hwnd) {
     // 创建ListView (右侧文件列表)
     g_listView = CreateWindowExW(
         0, WC_LISTVIEWW, L"",
-        WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SINGLESEL,
+        WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_OWNERDATA,
         220, 50, 570, 500,
         hwnd, NULL, NULL, NULL
     );
@@ -411,6 +413,18 @@ void HandleCreateMessage(HWND hwnd) {
     col3.cx = 100;
     col3.pszText = (LPWSTR)L"类型";
     SendMessageW(g_listView, LVM_INSERTCOLUMNW, 2, (LPARAM)&col3);
+
+    LVCOLUMNW col4 = {0};
+    col4.mask = LVCF_TEXT | LVCF_WIDTH;
+    col4.cx = 150;
+    col4.pszText = (LPWSTR)L"修改时间";
+    SendMessageW(g_listView, LVM_INSERTCOLUMNW, 3, (LPARAM)&col4);
+
+    LVCOLUMNW col5 = {0};
+    col5.mask = LVCF_TEXT | LVCF_WIDTH;
+    col5.cx = 150;
+    col5.pszText = (LPWSTR)L"创建时间";
+    SendMessageW(g_listView, LVM_INSERTCOLUMNW, 4, (LPARAM)&col5);
 }
 
 // 处理WM_SIZE消息的函数
@@ -420,23 +434,29 @@ void HandleSizeMessage(HWND hwnd, WPARAM wParam, LPARAM lParam) {
         return;
     }
 
+    int clientWidth = LOWORD(lParam);
+    int clientHeight = HIWORD(lParam);
+
     // 调整控件大小
-    if (g_backButton) {
-        MoveWindow(g_backButton, 170, 10, 70, 25, TRUE);
-    }
+    if (g_backButton) MoveWindow(g_backButton, 10, 10, 40, 25, TRUE);
+    if (g_forwardButton) MoveWindow(g_forwardButton, 55, 10, 40, 25, TRUE);
+    if (g_upButton) MoveWindow(g_upButton, 100, 10, 40, 25, TRUE);
     
+    int settingsBtnX = clientWidth - 70;
+    int openBtnX = clientWidth - 135;
+    int goBtnX = clientWidth - 200;
+
+    if (g_goButton) MoveWindow(g_goButton, goBtnX, 10, 60, 25, TRUE);
+    if (g_openInExplorerButton) MoveWindow(g_openInExplorerButton, openBtnX, 10, 60, 25, TRUE);
+    if (g_settingsButton) MoveWindow(g_settingsButton, settingsBtnX, 10, 60, 25, TRUE);
+
     if (g_addressBar) {
-        MoveWindow(g_addressBar, 250, 10, LOWORD(lParam) - 340, 25, TRUE);
-    }
-    
-    if (g_goButton) {
-        MoveWindow(g_goButton, LOWORD(lParam) - 90, 10, 80, 25, TRUE);
+        int addrWidth = goBtnX - 150 - 10;
+        if (addrWidth < 0) addrWidth = 0;
+        MoveWindow(g_addressBar, 150, 10, addrWidth, 25, TRUE);
     }
     
     // 不再调整收藏夹按钮大小，已移除该按钮
-    
-    int clientWidth = LOWORD(lParam);
-    int clientHeight = HIWORD(lParam);
     
     // 确保分隔条位置在合理范围内
     if (g_splitterPos < 100) g_splitterPos = 100;
@@ -476,6 +496,18 @@ void saveLayoutState() {
         fwprintf(fp, L"SplitterPos=%d\n", g_splitterPos);
         fclose(fp);
     }
+}
+
+void HandleDestroyMessage(HWND hwnd) {
+    if (g_timerActive) {
+        KillTimer(hwnd, IDT_UI_BATCH);
+        g_timerActive = FALSE;
+    }
+    DeleteCriticalSection(&g_fileListLock);
+}
+
+BOOL HasPendingItems() {
+    return g_enumInProgress;
 }
 
 // 加载布局状态
@@ -589,8 +621,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 if (HIWORD(wParam) == BN_CLICKED) {
                     HandleGoButtonClick(hwnd);
                 }
-            } else if ((HWND)lParam == g_backButton && HIWORD(wParam) == BN_CLICKED) {
-                HandleBackButtonClick();
+            } else if ((HWND)lParam == g_upButton && HIWORD(wParam) == BN_CLICKED) {
+                HandleBackButtonClick(); // Reuse existing function which implements "Up" logic
+            } else if ((HWND)lParam == g_openInExplorerButton && HIWORD(wParam) == BN_CLICKED) {
+                ShellExecuteW(NULL, L"explore", g_currentPath, NULL, NULL, SW_SHOWNORMAL);
+            } else if ((HWND)lParam == g_settingsButton && HIWORD(wParam) == BN_CLICKED) {
+                ShowSettingsDialog(hwnd);
             } else if (LOWORD(wParam) == 1 || LOWORD(wParam) == 2 || LOWORD(wParam) == 3) {
                 LogMessage(L"[DEBUG] WM_COMMAND 收到收藏夹命令: %d", LOWORD(wParam));
                 HandleFavoriteCommands(wParam);
@@ -628,18 +664,65 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             return 0;
         }
 
+        case WM_APP_UPDATE_COUNT: {
+            if (!g_listView) return 0;
+            EnterCriticalSection(&g_fileListLock);
+            int count = (int)g_fileList.size();
+            LeaveCriticalSection(&g_fileListLock);
+            SendMessageW(g_listView, LVM_SETITEMCOUNT, (WPARAM)count, LVSICF_NOINVALIDATEALL | LVSICF_NOSCROLL);
+            return 0;
+        }
+
+        case WM_APP_SORTDONE: {
+            if (!g_listView) return 0;
+            InvalidateRect(g_listView, NULL, TRUE);
+            UpdateWindow(g_listView);
+            g_sorting = FALSE;
+            return 0;
+        }
+
         case WM_APP_DIRSIZE: {
             DirSizeResult* res = (DirSizeResult*)lParam;
             if (res) {
+                if (g_sorting) { delete res; return 0; }
                 if (lstrcmpiW(res->parent, g_currentPath) == 0) {
-                    UpdateListViewDirSize(res->parent, res->name, res->size);
+                     // 更新UI
+                     UpdateListViewDirSize(res->parent, res->name, res->size, res->isPartial);
                 }
                 delete res;
             }
             return 0;
         }
 
+        case WM_APP_LISTDONE: {
+            g_enumInProgress = FALSE;
+            EnterCriticalSection(&g_fileListLock);
+            int count = (int)g_fileList.size();
+            LeaveCriticalSection(&g_fileListLock);
+            SendMessageW(g_listView, LVM_SETITEMCOUNT, (WPARAM)count, LVSICF_NOINVALIDATEALL);
+            InvalidateRect(g_listView, NULL, TRUE);
+            
+            std::vector<std::wstring> dirs;
+            EnterCriticalSection(&g_fileListLock);
+            for (const auto& item : g_fileList) {
+                if (item.isDir && item.name != L"." && item.name != L"..") {
+                    dirs.push_back(item.name);
+                }
+            }
+            LeaveCriticalSection(&g_fileListLock);
+            
+            if (!dirs.empty()) {
+                DirSizeTask* task = new DirSizeTask();
+                lstrcpyW(task->parent, g_currentPath);
+                task->names = std::move(dirs);
+                task->generation = g_dirSizeGen;
+                CreateThread(NULL, 0, DirSizeWorker, task, 0, NULL);
+            }
+            return 0;
+        }
+
         case WM_DESTROY: {
+            HandleDestroyMessage(hwnd);
             // 保存收藏夹数据
             LogMessage(L"[DEBUG] 保存收藏夹数据到文件...");
             saveFavoritesToFile();
@@ -727,7 +810,7 @@ void HandleListViewDoubleClick(HWND hwnd, LPARAM lParam) {
                 setCurrentDirectory(newPath);
                 updateFileList();
                 // 更新目录树
-                updateDirectoryTree();
+                syncTreeViewWithPath(newPath);
             } else {
                 MessageBoxW(hwnd, L"无效的目录路径", L"错误", MB_OK | MB_ICONERROR);
             }
@@ -1041,7 +1124,10 @@ void HideCustomTooltip() {
 
 // WinMain入口点
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
-    // 分配控制台窗口并输出日志
+    // 加载设置
+    loadSettings();
+
+    // 注册窗口类分配控制台窗口并输出日志
     LogMessage(L"资源管理器程序启动中...");
     
     
@@ -1111,27 +1197,32 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     
     return 0;
 }
-void UpdateListViewDirSize(const WCHAR* parentPath, const WCHAR* name, ULONGLONG size) {
-    LVFINDINFOW find = {0};
-    find.flags = LVFI_STRING;
-    find.psz = (LPWSTR)name;
-    int idx = (int)SendMessageW(g_listView, LVM_FINDITEMW, (WPARAM)-1, (LPARAM)&find);
+void UpdateListViewDirSize(const WCHAR* parentPath, const WCHAR* name, ULONGLONG size, BOOL isPartial) {
+    EnterCriticalSection(&g_fileListLock);
+    int idx = -1;
+    for (size_t i = 0; i < g_fileList.size(); ++i) {
+        if (g_fileList[i].isDir && g_fileList[i].name == name) {
+            g_fileList[i].sizeNumeric = size;
+            g_fileList[i].isPartial = isPartial;
+            idx = (int)i;
+            break;
+        }
+    }
+    LeaveCriticalSection(&g_fileListLock);
+
     if (idx != -1) {
-        WCHAR buf[64];
-        formatFileSize(size, buf, 64);
-        LVITEMW subItem = {0};
-        subItem.iItem = idx;
-        subItem.iSubItem = 1;
-        subItem.mask = LVIF_TEXT;
-        subItem.pszText = buf;
-        SendMessageW(g_listView, LVM_SETITEMW, 0, (LPARAM)&subItem);
+        // 刷新特定项
+        SendMessageW(g_listView, LVM_REDRAWITEMS, idx, idx);
+        UpdateWindow(g_listView);
     }
 }
 
 DWORD WINAPI DirSizeWorker(LPVOID lpParam) {
     DirSizeTask* task = (DirSizeTask*)lpParam;
     if (!task) return 0;
+    LONG myGen = task->generation;
     for (const auto& name : task->names) {
+        if (myGen != g_dirSizeGen) break;
         WCHAR fullPath[MAX_PATH] = {0};
         lstrcpyW(fullPath, task->parent);
         if (fullPath[lstrlenW(fullPath) - 1] != L'\\') {
@@ -1140,18 +1231,98 @@ DWORD WINAPI DirSizeWorker(LPVOID lpParam) {
         lstrcatW(fullPath, name.c_str());
 
         ULONGLONG dirSize = 0;
-        if (!getCachedDirSize(fullPath, &dirSize)) {
-            dirSize = computeDirectorySize(fullPath);
-            setCachedDirSize(fullPath, dirSize);
+        BOOL isComplete = FALSE;
+        if (myGen != g_dirSizeGen) break;
+        
+        // 尝试从缓存获取
+        if (getCachedDirSize(fullPath, &dirSize)) {
+            isComplete = TRUE;
+        } else {
+            // 缓存未命中，计算大小
+            dirSize = computeDirectorySize(fullPath, &isComplete);
+            // 只有完整计算的结果才写入缓存
+            if (isComplete) {
+                setCachedDirSize(fullPath, dirSize);
+            }
         }
 
         DirSizeResult* res = new DirSizeResult();
         lstrcpyW(res->parent, task->parent);
         lstrcpyW(res->name, name.c_str());
         res->size = dirSize;
+        res->isPartial = !isComplete;
         PostMessageW(g_mainWindow, WM_APP_DIRSIZE, 0, (LPARAM)res);
+        Sleep(1);
         // 注意：使用全局窗口句柄
     }
     delete task;
+    return 0;
+}
+
+DWORD WINAPI ListEnumWorker(LPVOID lpParam) {
+    ListEnumTask* t = (ListEnumTask*)lpParam;
+    if (!t) return 0;
+    LONG myGen = t->generation;
+    if (myGen != g_dirSizeGen) { delete t; return 0; }
+    
+    WIN32_FIND_DATAW findData;
+    WCHAR searchPath[MAX_PATH];
+    lstrcpyW(searchPath, t->parent);
+    int len = lstrlenW(searchPath);
+    if (len > 0 && searchPath[len - 1] != L'\\') {
+        lstrcatW(searchPath, L"\\");
+    }
+    lstrcatW(searchPath, L"*");
+    
+    std::vector<ItemSortData> chunk;
+    chunk.reserve(1000);
+    
+    HANDLE hFind = FindFirstFileW(searchPath, &findData);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (myGen != g_dirSizeGen) break;
+            if (wcscmp(findData.cFileName, L".") == 0 || wcscmp(findData.cFileName, L"..") == 0) continue;
+            
+            ItemSortData r;
+            r.name = findData.cFileName;
+            r.isDir = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            ULARGE_INTEGER fileSize;
+            fileSize.LowPart = findData.nFileSizeLow;
+            fileSize.HighPart = findData.nFileSizeHigh;
+            r.sizeNumeric = fileSize.QuadPart;
+            r.created = findData.ftCreationTime;
+            r.modified = findData.ftLastWriteTime;
+            r.isPartial = FALSE;
+            
+            chunk.push_back(r);
+            
+            if (chunk.size() >= 500) {
+                EnterCriticalSection(&g_fileListLock);
+                if (myGen == g_dirSizeGen) {
+                    g_fileList.insert(g_fileList.end(), chunk.begin(), chunk.end());
+                }
+                LeaveCriticalSection(&g_fileListLock);
+                chunk.clear();
+                
+                if (myGen == g_dirSizeGen) {
+                    PostMessageW(g_mainWindow, WM_APP_UPDATE_COUNT, 0, 0);
+                }
+                Sleep(1);
+            }
+        } while (FindNextFileW(hFind, &findData));
+        FindClose(hFind);
+    }
+    
+    if (!chunk.empty() && myGen == g_dirSizeGen) {
+        EnterCriticalSection(&g_fileListLock);
+        g_fileList.insert(g_fileList.end(), chunk.begin(), chunk.end());
+        LeaveCriticalSection(&g_fileListLock);
+        PostMessageW(g_mainWindow, WM_APP_UPDATE_COUNT, 0, 0);
+    }
+    
+    if (myGen == g_dirSizeGen) {
+        PostMessageW(g_mainWindow, WM_APP_LISTDONE, 0, 0);
+    }
+    delete t;
     return 0;
 }

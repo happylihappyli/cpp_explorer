@@ -1,6 +1,7 @@
 #include "file_utils.h"
 #include "log.h"
 #include <windows.h>
+#include <shellapi.h>
 #include <shlwapi.h>
 #include <string>
 
@@ -101,6 +102,8 @@ int listDirectory(const WCHAR* path, FileInfo* files, int maxFiles) {
             if (count < maxFiles) {
                 lstrcpyW(files[count].name, findData.cFileName);
                 files[count].isDirectory = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                files[count].creationTime = findData.ftCreationTime;
+                files[count].lastWriteTime = findData.ftLastWriteTime;
                 
                 if (files[count].isDirectory) {
                     files[count].size = 0;
@@ -123,7 +126,7 @@ int listDirectory(const WCHAR* path, FileInfo* files, int maxFiles) {
 // 格式化文件大小
 void formatFileSize(ULONGLONG size, WCHAR* buffer, int bufferSize) {
     if (size == 0) {
-        lstrcpyW(buffer, L"-");
+        lstrcpyW(buffer, L"0");
         return;
     }
     
@@ -143,6 +146,18 @@ void formatFileSize(ULONGLONG size, WCHAR* buffer, int bufferSize) {
     }
 }
 
+void formatFileTime(const FILETIME* ft, WCHAR* buffer, int bufferSize) {
+    if (!ft) {
+        lstrcpyW(buffer, L"-");
+        return;
+    }
+    FILETIME localFt;
+    SYSTEMTIME st;
+    FileTimeToLocalFileTime(ft, &localFt);
+    FileTimeToSystemTime(&localFt, &st);
+    swprintf_s(buffer, bufferSize, L"%04d-%02d-%02d %02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+}
+
 // 获取可执行文件所在目录
 void getExecutableDirectory(WCHAR* buffer, int bufferSize) {
     if (GetModuleFileNameW(NULL, buffer, bufferSize) == 0) {
@@ -160,9 +175,14 @@ void getExecutableDirectory(WCHAR* buffer, int bufferSize) {
     }
 }
 
-// 计算目录累计大小（递归）
-ULONGLONG computeDirectorySize(const WCHAR* path) {
+// 前向声明
+BOOL getCachedDirSize(const WCHAR* path, ULONGLONG* sizeOut);
+
+// 计算目录累计大小（非递归，仅使用缓存的子目录大小）
+// 如果遇到未缓存的子目录，返回当前累计大小，并设置 isComplete 为 FALSE
+ULONGLONG computeDirectorySize(const WCHAR* path, BOOL* isComplete) {
     ULONGLONG total = 0;
+    if (isComplete) *isComplete = TRUE;
 
     WCHAR searchPath[MAX_PATH];
     lstrcpyW(searchPath, path);
@@ -183,16 +203,22 @@ ULONGLONG computeDirectorySize(const WCHAR* path) {
             continue;
         }
 
-        WCHAR childPath[MAX_PATH];
-        lstrcpyW(childPath, path);
-        int clen = lstrlenW(childPath);
-        if (clen > 0 && childPath[clen - 1] != L'\\') {
-            lstrcatW(childPath, L"\\");
-        }
-        lstrcatW(childPath, findData.cFileName);
+        if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(findData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            WCHAR childPath[MAX_PATH];
+            lstrcpyW(childPath, path);
+            int clen = lstrlenW(childPath);
+            if (clen > 0 && childPath[clen - 1] != L'\\') {
+                lstrcatW(childPath, L"\\");
+            }
+            lstrcatW(childPath, findData.cFileName);
 
-        if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            total += computeDirectorySize(childPath);
+            ULONGLONG subSize = 0;
+            if (getCachedDirSize(childPath, &subSize)) {
+                total += subSize;
+            } else {
+                // 子目录大小未缓存，标记为不完整，但继续计算其他部分
+                if (isComplete) *isComplete = FALSE;
+            }
         } else {
             ULARGE_INTEGER fileSize;
             fileSize.LowPart = findData.nFileSizeLow;
@@ -296,4 +322,24 @@ void setCachedDirSize(const WCHAR* path, ULONGLONG size) {
     }
     fwprintf(fp, L"%s\t%llu\n", path, size);
     fclose(fp);
+}
+
+// 删除文件或目录到回收站
+bool DeleteToRecycleBin(const WCHAR* path) {
+    WCHAR shPath[MAX_PATH + 1] = {0}; // 必须以双NULL结尾
+    lstrcpynW(shPath, path, MAX_PATH);
+    
+    SHFILEOPSTRUCTW fileOp = {0};
+    fileOp.wFunc = FO_DELETE;
+    fileOp.pFrom = shPath;
+    fileOp.pTo = NULL;
+    fileOp.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION; // 允许撤销(放入回收站)，不显示确认框(由系统决定是否显示，FOF_NOCONFIRMATION通常用于静默，但回收站通常还是安全的)
+    // 如果想要显示系统的确认对话框，去掉 FOF_NOCONFIRMATION
+    // 用户通常希望有确认，或者回收站本身就是一种保护。
+    // Windows Explorer通常会弹框确认 "Are you sure you want to move this to the Recycle Bin?"
+    // 所以这里我先去掉 FOF_NOCONFIRMATION，让系统处理确认逻辑。
+    fileOp.fFlags = FOF_ALLOWUNDO; 
+    
+    int result = SHFileOperationW(&fileOp);
+    return (result == 0) && !fileOp.fAnyOperationsAborted;
 }

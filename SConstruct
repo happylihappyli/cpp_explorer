@@ -26,7 +26,7 @@ env.Append(CXXFLAGS=['-std=c++17'])
 env.Append(CPPDEFINES=['UNICODE', '_UNICODE'])
 
 # 添加Windows特定的库
-env.Append(LIBS=['ole32', 'oleaut32', 'uuid', 'comctl32', 'shell32', 'user32', 'gdi32', 'shlwapi'])
+env.Append(LIBS=['ole32', 'oleaut32', 'uuid', 'comctl32', 'shell32', 'user32', 'gdi32', 'shlwapi', 'comdlg32'])
 
 # 添加警告标志
 env.Append(CXXFLAGS=['-Wall'])
@@ -49,7 +49,7 @@ env['RCCOM'] = '$RC $RCFLAGS /FO $TARGET $SOURCE'
 # 显式编译资源文件
 res_obj = env.Command('src/obj/resource.res', 'src/resource.rc', '$RCCOM')
 
-fixed_sources = ['src/explorer.cpp', 'src/favorites.cpp', 'src/tree_utils.cpp', 'src/log.cpp', 'src/file_utils.cpp', 'src/notification_handlers.cpp', 'src/go_button_handler.cpp']
+fixed_sources = ['src/explorer.cpp', 'src/favorites.cpp', 'src/tree_utils.cpp', 'src/log.cpp', 'src/file_utils.cpp', 'src/notification_handlers.cpp', 'src/go_button_handler.cpp', 'src/settings.cpp']
 # 将资源对象文件添加到源列表
 fixed_sources.extend(res_obj)
 

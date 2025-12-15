@@ -1,5 +1,6 @@
 import struct
 import os
+import math
 
 def create_icon(filename):
     # Ensure directory exists
@@ -14,49 +15,119 @@ def create_icon(filename):
     height = 32
     
     # Pixel Data (BGRA)
-    # Blue icon with a lighter "E" shape or just a border
+    # Green theme: Leaf
     xor_data = bytearray()
+    
+    # Coordinates: y=0 is bottom, y=31 is top
     for y in range(height):
         for x in range(width):
-            # Default Blue background
-            b, g, r, a = 220, 120, 60, 255 # Nice Blue-ish
+            # Default transparent
+            b, g, r, a = 0, 0, 0, 0
             
-            # Simple border
-            if x == 0 or x == width-1 or y == 0 or y == height-1:
-                b, g, r = 180, 180, 180
+            # Leaf Construction
+            # Use intersection of two circles to create a leaf shape
+            # Axis of leaf: Diagonal from (0,0) to (32,32)
+            # Centers of circles should be on the perpendicular diagonal
             
-            # Draw an "E" shape
-            # Vertical bar
-            if x >= 6 and x <= 10 and y >= 6 and y <= 25:
-                b, g, r = 255, 255, 255
-            # Top bar
-            if x >= 6 and x <= 22 and y >= 21 and y <= 25: # Inverted Y (BMP is bottom-up)? 
-                # Actually BMP is usually bottom-up, so y=0 is bottom.
-                # Let's assume standard bottom-up DIB.
-                # If y=0 is bottom, then y=31 is top.
-                pass
+            # Center 1 (Top-Left area)
+            cx1, cy1 = 4, 28
+            # Center 2 (Bottom-Right area)
+            cx2, cy2 = 28, 4
             
-            # Let's just do a simple gradient to be safe
-            if (x - 16)**2 + (y - 16)**2 < 100:
-                b, g, r = 255, 200, 100 # Center dot
+            # Radius needs to be large enough to cover the center
+            # Distance between centers is approx sqrt(24^2 + 24^2) = 33.9
+            # Midpoint distance = 17.
+            # So radius must be > 17.
+            radius = 24.0
+            
+            d1 = math.sqrt((x - cx1)**2 + (y - cy1)**2)
+            d2 = math.sqrt((x - cx2)**2 + (y - cy2)**2)
+            
+            in_leaf = (d1 < radius) and (d2 < radius)
+            
+            # Stem logic
+            # A small curved line at the bottom left
+            # Let's approximate with a small rectangle or line near (6,6)
+            # Distance to main diagonal
+            dist_diag = (y - x) / math.sqrt(2) # signed distance
+            pos_diag = (x + y) / math.sqrt(2)
+            
+            # Stem area: near the base of the leaf
+            # Leaf tips are roughly where d1=radius and d2=radius on the diagonal.
+            # Calculation: (x-4)^2 + (x-28)^2 = 24^2 => 2x^2 - 64x + ...
+            # Let's just empirically say the stem is around x=6, y=6
+            
+            in_stem = False
+            if not in_leaf:
+                if abs(dist_diag) < 1.5 and pos_diag > 6 and pos_diag < 12:
+                    in_stem = True
+            
+            if in_leaf:
+                # Green Gradient
+                # Varies from dark green at bottom to lighter at top
+                # Normalized position 0..1
+                t = (x + y) / 64.0 
                 
+                # Base color (Dark Green) to Light Green
+                # R: 0 -> 40
+                # G: 100 -> 220
+                # B: 0 -> 40
+                
+                cur_r = int(0 + t * 60)
+                cur_g = int(120 + t * 135)
+                cur_b = int(0 + t * 80)
+                
+                # Main Vein (Central)
+                if abs(dist_diag) < 0.5:
+                    cur_r, cur_g, cur_b = 100, 255, 120 # Bright vein
+                elif abs(dist_diag) < 0.8:
+                    cur_r, cur_g, cur_b = 60, 230, 80 # Vein edge
+                    
+                # Border
+                edge_dist = min(radius - d1, radius - d2)
+                if edge_dist < 1.5:
+                    cur_r, cur_g, cur_b = 0, 80, 0 # Dark border
+                
+                b, g, r, a = cur_b, cur_g, cur_r, 255
+                
+            elif in_stem:
+                # Brownish Green Stem
+                b, g, r, a = 10, 100, 60, 255
+            
             xor_data.extend([b, g, r, a])
 
     # AND Mask (1 bit per pixel). 0 = opaque, 1 = transparent.
-    # 32 pixels wide = 32 bits = 4 bytes per row.
-    and_data = bytearray(width * height // 8)
+    and_bits = []
+    idx = 0
+    for y in range(height):
+        row_bits = 0
+        for x in range(width):
+            # Get alpha from xor_data
+            alpha = xor_data[idx*4 + 3]
+            idx += 1
+            
+            # If alpha is 0 (fully transparent), set bit to 1.
+            # If alpha > 0 (partially or fully opaque), set bit to 0.
+            if alpha == 0:
+                row_bits |= (1 << (7 - (x % 8)))
+            
+            if (x + 1) % 8 == 0:
+                and_bits.append(row_bits)
+                row_bits = 0
+    
+    and_data = bytearray(and_bits)
 
     xor_size = len(xor_data)
     and_size = len(and_data)
-    total_size = 40 + xor_size + and_size # 40 is BITMAPINFOHEADER size
-
+    total_size = 40 + xor_size + and_size
+    
+    # Offset to image data = Header(6) + DirectoryEntry(16)
+    offset = 6 + 16
+    
     # Image Directory Entry
-    # Width(1), Height(1), Colors(1), Reserved(1), Planes(2), BPP(2), Size(4), Offset(4)
-    offset = 6 + 16 # Header + 1 Entry
     entry = struct.pack('<BBBBHHII', width, height, 0, 0, 1, 32, total_size, offset)
 
     # BITMAPINFOHEADER
-    # Size (4), Width (4), Height (4), Planes (2), BPP (2), Compression (4), ImageSize (4), ...
     # Height is height * 2 for ICO (XOR + AND masks)
     bih = struct.pack('<IiiHHIIIIII', 40, width, height * 2, 1, 32, 0, xor_size + and_size, 0, 0, 0, 0)
 

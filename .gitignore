@@ -4,3 +4,4 @@ bin/layout_state.ini
 /obj
 /.vscode
 bin/tree_state.txt
+/src/obj

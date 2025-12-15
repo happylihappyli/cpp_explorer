@@ -101,8 +101,8 @@ void addPlaceholderNode(HWND treeView, HTREEITEM parent) {
     tvis.hParent = parent;
     tvis.hInsertAfter = TVI_LAST;
     tvis.item.mask = TVIF_TEXT | TVIF_PARAM;
-    tvis.item.pszText = (LPWSTR)L"(正在加载...)";
-    tvis.item.lParam = 0;  // 占位符节点
+    tvis.item.pszText = (LPWSTR)L"Loading...";
+    tvis.item.lParam = 0;
     
     TreeView_InsertItem(treeView, &tvis);
 }
@@ -277,24 +277,21 @@ void saveTreeExpansionState() {
     lstrcpyW(filePath, exePath);
     lstrcatW(filePath, L"tree_state.txt");
     
+    LogMessage(L"[DEBUG] 保存树展开状态到 %s", filePath);
+    
     FILE* fp = NULL;
     errno_t err = _wfopen_s(&fp, filePath, L"w, ccs=UTF-8");
-    if (err != 0 || !fp) {
-        LogMessage(L"[ERROR] 无法打开 %s 进行写入", filePath);
-        return;
+    if (err == 0 && fp) {
+        // 从根节点开始遍历
+        HTREEITEM hRoot = TreeView_GetRoot(g_treeView);
+        saveExpandedNodes(g_treeView, hRoot, fp);
+        fclose(fp);
+    } else {
+        LogMessage(L"[ERROR] 无法打开文件保存树状态");
     }
-    
-    LogMessage(L"[DEBUG] 开始保存树展开状态到: %s", filePath);
-    
-    // 从根节点开始遍历
-    HTREEITEM hRoot = TreeView_GetRoot(g_treeView);
-    saveExpandedNodes(g_treeView, hRoot, fp);
-    
-    fclose(fp);
-    LogMessage(L"[DEBUG] 树展开状态保存完成");
 }
 
-// 辅助函数：查找子节点
+// 查找子节点
 HTREEITEM findChildNode(HWND treeView, HTREEITEM hParent, const WCHAR* name) {
     HTREEITEM hChild = hParent ? TreeView_GetChild(treeView, hParent) : TreeView_GetRoot(treeView);
     while (hChild) {
@@ -399,4 +396,51 @@ void restoreTreeExpansionState() {
     
     fclose(fp);
     LogMessage(L"[DEBUG] 树展开状态恢复完成");
+}
+
+// 同步TreeView到指定路径
+void syncTreeViewWithPath(const WCHAR* path) {
+    if (!g_treeView || !path || !*path) return;
+    
+    LogMessage(L"[DEBUG] syncTreeViewWithPath: %s", path);
+
+    WCHAR pathCopy[MAX_PATH];
+    lstrcpyW(pathCopy, path);
+
+    WCHAR* context = NULL;
+    WCHAR* token = wcstok_s(pathCopy, L"\\", &context);
+
+    HTREEITEM hCurrent = NULL;
+
+    if (token) {
+        // Try to find root (drive)
+        hCurrent = findChildNode(g_treeView, NULL, token);
+        if (!hCurrent) {
+            WCHAR tokenWithSlash[MAX_PATH];
+            lstrcpyW(tokenWithSlash, token);
+            lstrcatW(tokenWithSlash, L"\\");
+            hCurrent = findChildNode(g_treeView, NULL, tokenWithSlash);
+        }
+
+        if (hCurrent) {
+            TreeView_Expand(g_treeView, hCurrent, TVE_EXPAND);
+            
+            while ((token = wcstok_s(NULL, L"\\", &context)) != NULL) {
+                HTREEITEM hNext = findChildNode(g_treeView, hCurrent, token);
+                if (hNext) {
+                    hCurrent = hNext;
+                    TreeView_Expand(g_treeView, hCurrent, TVE_EXPAND);
+                } else {
+                    LogMessage(L"[DEBUG] syncTreeViewWithPath: Could not find child %s", token);
+                    break;
+                }
+            }
+            
+            // Select the final node
+            TreeView_SelectItem(g_treeView, hCurrent);
+            TreeView_EnsureVisible(g_treeView, hCurrent);
+        } else {
+             LogMessage(L"[DEBUG] syncTreeViewWithPath: Could not find root %s", token);
+        }
+    }
 }

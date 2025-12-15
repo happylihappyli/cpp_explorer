@@ -34,4 +34,7 @@ void restoreTreeExpansionState();
 // 查找子节点
 HTREEITEM findChildNode(HWND treeView, HTREEITEM hParent, const WCHAR* name);
 
+// 同步TreeView到指定路径
+void syncTreeViewWithPath(const WCHAR* path);
+
 #endif // TREE_UTILS_H
