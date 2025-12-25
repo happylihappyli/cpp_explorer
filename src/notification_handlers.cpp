@@ -22,6 +22,7 @@ extern HWND g_listView;
 extern HWND g_treeView;
 extern HWND g_mainWindow;
 extern HWND g_addressBar;
+extern HWND g_statusBar;
 extern HTREEITEM g_favoritesNode;
 extern WCHAR g_currentPath[MAX_PATH];
 extern BOOL g_timerActive;
@@ -29,6 +30,8 @@ extern BOOL g_sorting;
 extern BOOL HasPendingItems();
 extern std::vector<ItemSortData> g_fileList;
 extern CRITICAL_SECTION g_fileListLock;
+extern double g_diskUsageRatio;  // 磁盘占用比例 (0.0 - 1.0)
+extern WCHAR g_diskSpaceInfo[256];  // 磁盘空间信息文本
 
 // 函数声明
 void HandleListViewDoubleClick(HWND hwnd, LPARAM lParam);
@@ -36,6 +39,36 @@ void HandleTreeViewDoubleClick(HWND hwnd, HWND mainWindow);
 void setCurrentDirectory(const WCHAR* path);
 void updateFileList();
 void loadFavoritesIntoTree();
+
+// 更新磁盘占用比例
+void updateDiskUsageRatio(const WCHAR* path) {
+    WCHAR rootPath[MAX_PATH] = {0};
+    if (path[0] && path[1] == L':') {
+        // 提取驱动器根路径（如 C:\）
+        rootPath[0] = path[0];
+        rootPath[1] = L':';
+        rootPath[2] = L'\\';
+        rootPath[3] = L'\0';
+    } else {
+        // 获取当前驱动器根路径
+        GetDriveTypeW(L"C:\\");
+        rootPath[0] = g_currentPath[0];
+        rootPath[1] = L':';
+        rootPath[2] = L'\\';
+        rootPath[3] = L'\0';
+    }
+
+    ULARGE_INTEGER freeBytesAvailable = {0};
+    ULARGE_INTEGER totalBytes = {0};
+    ULARGE_INTEGER totalFreeBytes = {0};
+
+    if (GetDiskFreeSpaceExW(rootPath, &freeBytesAvailable, &totalBytes, &totalFreeBytes)) {
+        if (totalBytes.QuadPart > 0) {
+            g_diskUsageRatio = 1.0 - ((double)totalFreeBytes.QuadPart / (double)totalBytes.QuadPart);
+            LogMessage(L"磁盘占用比例更新: %.1f%% (驱动器: %s)", g_diskUsageRatio * 100.0, rootPath);
+        }
+    }
+}
 
 // 创建快捷方式
 HRESULT CreateLink(LPCWSTR lpszPathObj, LPCWSTR lpszPathLink, LPCWSTR lpszDesc)
@@ -399,7 +432,10 @@ LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam) {
                 // 获取项的数据
                 TVITEMW tvi = {0};
                 tvi.hItem = hItem;
-                tvi.mask = TVIF_PARAM;
+                tvi.mask = TVIF_PARAM | TVIF_TEXT;
+                WCHAR itemText[MAX_PATH] = {0};
+                tvi.pszText = itemText;
+                tvi.cchTextMax = MAX_PATH;
                 TreeView_GetItem(g_treeView, &tvi);
                 
                 // 检查是否为收藏夹根节点
@@ -428,6 +464,17 @@ LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam) {
                     setCurrentDirectory(pFavoriteItem->path);
                     updateFileList();
                     
+                    // 更新磁盘占用比例
+                    updateDiskUsageRatio(pFavoriteItem->path);
+                    
+                    // 清空磁盘空间信息（收藏夹可能指向普通目录）
+                    g_diskSpaceInfo[0] = L'\0';
+                    
+                    // 触发状态栏重绘
+                    if (g_statusBar) {
+                        InvalidateRect(g_statusBar, NULL, TRUE);
+                    }
+                    
                     // 单击同时也展开节点
                     TreeView_Expand(g_treeView, hItem, TVE_EXPAND);
                 } else {
@@ -440,6 +487,42 @@ LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam) {
                     if (wcsstr(fullPath, L"★ 收藏夹") == NULL) {
                         setCurrentDirectory(fullPath);
                         updateFileList();
+                        
+                        // 更新磁盘占用比例
+                        updateDiskUsageRatio(fullPath);
+                        
+                        // 检查是否为驱动器节点（格式为 "X:\"）
+                        if (wcslen(fullPath) == 3 && fullPath[1] == L':' && fullPath[2] == L'\\') {
+                            // 获取驱动器的空闲空间
+                            ULARGE_INTEGER freeBytesAvailable = {0};
+                            ULARGE_INTEGER totalBytes = {0};
+                            ULARGE_INTEGER totalFreeBytes = {0};
+                            
+                            if (GetDiskFreeSpaceExW(fullPath, &freeBytesAvailable, &totalBytes, &totalFreeBytes)) {
+                                // 格式化空闲空间显示（转换为GB或MB）
+                                double freeGB = (double)totalFreeBytes.QuadPart / (1024.0 * 1024.0 * 1024.0);
+                                double totalGB = (double)totalBytes.QuadPart / (1024.0 * 1024.0 * 1024.0);
+                                
+                                if (freeGB >= 1.0) {
+                                    swprintf_s(g_diskSpaceInfo, 256, L"可用 %.2f GB / 总计 %.2f GB", freeGB, totalGB);
+                                } else {
+                                    double freeMB = (double)totalFreeBytes.QuadPart / (1024.0 * 1024.0);
+                                    swprintf_s(g_diskSpaceInfo, 256, L"可用 %.2f MB / 总计 %.2f GB", freeMB, totalGB);
+                                }
+                                
+                                LogMessage(L"[DEBUG] 驱动器空闲空间: %s, 占用比例: %.2f%%", g_diskSpaceInfo, g_diskUsageRatio * 100.0);
+                            } else {
+                                LogMessage(L"[ERROR] 获取驱动器空闲空间失败: %s", fullPath);
+                            }
+                        } else {
+                            // 普通目录，清空磁盘空间信息
+                            g_diskSpaceInfo[0] = L'\0';
+                        }
+                        
+                        // 触发状态栏重绘
+                        if (g_statusBar) {
+                            InvalidateRect(g_statusBar, NULL, TRUE);
+                        }
                     }
                 }
             }

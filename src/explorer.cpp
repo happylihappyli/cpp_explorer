@@ -17,6 +17,7 @@
 #pragma comment(lib, "shell32.lib")
 
 #define IDM_DEBUG 1001
+#define IDM_STATUSBAR 1002
 #define WM_APP_DIRSIZE (WM_APP + 1)
 #define WM_APP_LISTITEM (WM_APP + 2)
 #define WM_APP_LISTDONE (WM_APP + 3)
@@ -115,6 +116,9 @@ HWND g_upButton = NULL;
 HWND g_openInExplorerButton = NULL;
 HWND g_settingsButton = NULL;
 HWND g_addFavoriteButton = NULL;  // 添加收藏按钮
+HWND g_statusBar = NULL;  // 底部状态栏
+double g_diskUsageRatio = 0.0;  // 磁盘占用比例 (0.0 - 1.0)
+WCHAR g_diskSpaceInfo[256] = {0};  // 磁盘空间信息文本
 // 移除了单独的收藏夹面板，将其集成到目录树中
 WCHAR g_currentPath[MAX_PATH] = {0};
 HTREEITEM g_favoritesNode = NULL;  // 收藏夹节点
@@ -146,6 +150,7 @@ void HandleTreeViewDoubleClick(HWND hwnd, HWND mainWindow);
 void HandleDebugCommand(HWND hwnd, WPARAM wParam);
 BOOL RegisterWindowClass(HINSTANCE hInstance);
 HWND CreateMainWindow(HINSTANCE hInstance);
+LRESULT CALLBACK StatusBarProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);  // 状态栏自定义绘制过程
 
 // 获取当前工作目录
 void getCurrentDirectory(WCHAR* buffer, DWORD bufferSize) {
@@ -301,7 +306,7 @@ void HandleCreateMessage(HWND hwnd) {
     // 初始化通用控件
     INITCOMMONCONTROLSEX icex;
     icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
-    icex.dwICC = ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES;
+    icex.dwICC = ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES | ICC_BAR_CLASSES;
     InitCommonControlsEx(&icex);
     
     // 创建自定义字体，使用设置中的字体大小
@@ -489,6 +494,30 @@ void HandleCreateMessage(HWND hwnd) {
     col5.cx = 150;
     col5.pszText = (LPWSTR)L"创建时间";
     SendMessageW(g_listView, LVM_INSERTCOLUMNW, 4, (LPARAM)&col5);
+    
+    // 创建状态栏（底部）
+    g_statusBar = CreateWindowExW(
+        0,
+        STATUSCLASSNAMEW,
+        L"",
+        WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
+        0, 0, 0, 0,
+        hwnd,
+        (HMENU)IDM_STATUSBAR,
+        GetModuleHandle(NULL),
+        NULL
+    );
+    
+    // 设置状态栏高度为35像素
+    RECT rcClient;
+    GetClientRect(hwnd, &rcClient);
+    SetWindowPos(g_statusBar, NULL, 0, rcClient.bottom - 35, rcClient.right, 35, SWP_NOZORDER);
+    
+    // 子类化状态栏以实现自定义绘制
+    SetWindowLongPtr(g_statusBar, GWLP_WNDPROC, (LONG_PTR)StatusBarProc);
+    
+    // 设置状态栏的初始文本
+    SendMessageW(g_statusBar, WM_SETTEXT, 0, (LPARAM)L"就绪");
 }
 
 // 处理WM_SIZE消息的函数
@@ -529,7 +558,10 @@ void HandleSizeMessage(HWND hwnd, WPARAM wParam, LPARAM lParam) {
     // 调整TreeView大小 (左侧目录树)
     if (g_treeView) {
         // TreeView从x=10开始，宽度为 g_splitterPos - 10
-        MoveWindow(g_treeView, 10, 50, g_splitterPos - 10, clientHeight - 60, TRUE);
+        // 高度减去状态栏高度(35像素)和顶部工具栏高度(45像素)
+        int treeHeight = clientHeight - 45 - 35;
+        if (treeHeight < 0) treeHeight = 0;
+        MoveWindow(g_treeView, 10, 50, g_splitterPos - 10, treeHeight, TRUE);
     }
     
     // 调整ListView大小 (右侧文件列表)
@@ -538,8 +570,16 @@ void HandleSizeMessage(HWND hwnd, WPARAM wParam, LPARAM lParam) {
         int listViewX = g_splitterPos + SPLITTER_WIDTH;
         int listViewWidth = clientWidth - listViewX - 10; // 右侧保留10像素边距
         if (listViewWidth < 0) listViewWidth = 0;
+        // 高度减去状态栏高度(35像素)和顶部工具栏高度(45像素)
+        int listHeight = clientHeight - 45 - 35;
+        if (listHeight < 0) listHeight = 0;
         
-        MoveWindow(g_listView, listViewX, 50, listViewWidth, clientHeight - 60, TRUE);
+        MoveWindow(g_listView, listViewX, 50, listViewWidth, listHeight, TRUE);
+    }
+    
+    // 调整状态栏大小（底部）
+    if (g_statusBar) {
+        SetWindowPos(g_statusBar, NULL, 0, clientHeight - 35, clientWidth, 35, SWP_NOZORDER);
     }
 }
 
@@ -597,6 +637,104 @@ void loadLayoutState() {
         }
         fclose(fp);
     }
+}
+
+// 状态栏自定义绘制过程
+LRESULT CALLBACK StatusBarProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg) {
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            
+            // 获取状态栏客户区大小
+            RECT rect;
+            GetClientRect(hwnd, &rect);
+            
+            // 创建内存DC进行双缓冲绘制
+            HDC memDC = CreateCompatibleDC(hdc);
+            HBITMAP memBitmap = CreateCompatibleBitmap(hdc, rect.right - rect.left, rect.bottom - rect.top);
+            HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
+            
+            // 填充背景色
+            HBRUSH bgBrush = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
+            FillRect(memDC, &rect, bgBrush);
+            DeleteObject(bgBrush);
+            
+            // 绘制进度条区域（左侧）
+            int progressWidth = 120; // 进度条固定宽度120像素
+            int progressHeight = 12;
+            int progressX = 5;
+            int progressY = (rect.bottom - rect.top - progressHeight) / 2;
+            
+            RECT progressRect = {progressX, progressY, progressX + progressWidth, progressY + progressHeight};
+            
+            // 绘制进度条边框
+            HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(128, 128, 128));
+            HPEN oldPen = (HPEN)SelectObject(memDC, borderPen);
+            Rectangle(memDC, progressRect.left, progressRect.top, progressRect.right, progressRect.bottom);
+            
+            // 绘制进度条填充（根据磁盘占用比例）
+            if (g_diskUsageRatio > 0.0) {
+                int fillWidth = (int)((progressWidth - 2) * g_diskUsageRatio);
+                RECT fillRect = {progressRect.left + 1, progressRect.top + 1, 
+                                 progressRect.left + 1 + fillWidth, progressRect.bottom - 1};
+                
+                // 根据占用比例选择颜色
+                COLORREF progressColor;
+                if (g_diskUsageRatio < 0.5) {
+                    progressColor = RGB(0, 200, 0); // 绿色
+                } else if (g_diskUsageRatio < 0.8) {
+                    progressColor = RGB(255, 165, 0); // 橙色
+                } else {
+                    progressColor = RGB(255, 0, 0); // 红色
+                }
+                
+                HBRUSH fillBrush = CreateSolidBrush(progressColor);
+                FillRect(memDC, &fillRect, fillBrush);
+                DeleteObject(fillBrush);
+            }
+            
+            SelectObject(memDC, oldPen);
+            DeleteObject(borderPen);
+            
+            // 绘制磁盘占用百分比文本（进度条右侧）
+            WCHAR percentText[64];
+            int percent = (int)(g_diskUsageRatio * 100);
+            swprintf_s(percentText, 64, L"磁盘占用: %d%%", percent);
+            
+            int percentTextX = progressRect.right + 10;
+            RECT percentTextRect = {percentTextX, 0, percentTextX + 120, rect.bottom};
+            
+            SetBkMode(memDC, TRANSPARENT);
+            SetTextColor(memDC, GetSysColor(COLOR_BTNTEXT));
+            DrawTextW(memDC, percentText, -1, &percentTextRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            
+            // 绘制磁盘空间信息文本（最右侧）
+            if (g_diskSpaceInfo[0] != L'\0') {
+                int spaceInfoX = percentTextRect.right + 20;
+                RECT spaceInfoRect = {spaceInfoX, 0, rect.right, rect.bottom};
+                
+                DrawTextW(memDC, g_diskSpaceInfo, -1, &spaceInfoRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            }
+            
+            // 将内存DC内容复制到屏幕DC
+            BitBlt(hdc, 0, 0, rect.right - rect.left, rect.bottom - rect.top, memDC, 0, 0, SRCCOPY);
+            
+            // 清理资源
+            SelectObject(memDC, oldBitmap);
+            DeleteObject(memBitmap);
+            DeleteDC(memDC);
+            
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        
+        case WM_ERASEBKGND:
+            return 1; // 防止擦除背景，避免闪烁
+    }
+    
+    // 调用原始窗口过程处理其他消息
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
 // 窗口过程函数

@@ -1,5 +1,21 @@
 # SCons 构建脚本
 import os
+import subprocess
+import datetime
+
+# 记录开始时间
+start_time = datetime.datetime.now()
+print(f"编译开始时间: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+# 自动kill正在运行的myexplorer.exe进程
+try:
+    result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq myexplorer.exe'], capture_output=True, text=True)
+    if 'myexplorer.exe' in result.stdout:
+        print("发现正在运行的myexplorer.exe进程，正在终止...")
+        subprocess.run(['taskkill', '/F', '/IM', 'myexplorer.exe'], capture_output=True)
+        print("myexplorer.exe进程已终止")
+except Exception as e:
+    print(f"终止进程时出错: {e}")
 
 # 确保obj和bin目录存在
 if not os.path.exists('obj'):
@@ -21,6 +37,9 @@ print(f"使用的编译器: {env['CXX']}")
 
 # 设置编译选项为C++17标准
 env.Append(CXXFLAGS=['-std=c++17'])
+
+# 添加UTF-8编码支持
+env.Append(CXXFLAGS=['-finput-charset=UTF-8', '-fexec-charset=UTF-8'])
 
 # 添加UNICODE支持
 env.Append(CPPDEFINES=['UNICODE', '_UNICODE'])
@@ -57,3 +76,9 @@ fixed_program = env.Program(target='bin/myexplorer', source=fixed_sources)
 
 # 设置默认目标
 Default([fixed_program])
+
+# 记录结束时间
+end_time = datetime.datetime.now()
+duration = end_time - start_time
+print(f"编译结束时间: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+print(f"编译耗时: {duration.total_seconds():.2f} 秒")
