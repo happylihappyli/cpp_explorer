@@ -255,6 +255,46 @@ LRESULT CALLBACK AddressBarProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
     return CallWindowProc(g_OriginalAddressBarProc, hwnd, uMsg, wParam, lParam);
 }
 
+// 创建硬盘图标（使用系统图标）
+HICON createDriveIcon() {
+    // 使用系统驱动器图标
+    SHFILEINFO sfi = {0};
+    SHGetFileInfo(TEXT("C:\\"), 0, &sfi, sizeof(sfi), 
+                  SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
+    return sfi.hIcon;
+}
+
+// 创建收藏夹图标（使用ICO文件）
+HICON createFavoriteIcon() {
+    // 从ICO文件加载收藏夹图标（从bin目录）
+    WCHAR iconPath[MAX_PATH];
+    GetModuleFileNameW(NULL, iconPath, MAX_PATH);
+    WCHAR* lastSlash = wcsrchr(iconPath, L'\\');
+    if (lastSlash) {
+        *(lastSlash + 1) = L'\0';
+        lstrcatW(iconPath, L"favorite_icon.ico");
+    }
+    
+    HICON hIcon = (HICON)LoadImageW(
+        NULL,
+        iconPath,
+        IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON),
+        GetSystemMetrics(SM_CYSMICON),
+        LR_LOADFROMFILE | LR_DEFAULTSIZE
+    );
+    
+    // 如果加载失败，使用系统文件夹图标作为备用
+    if (!hIcon) {
+        SHFILEINFO sfi = {0};
+        SHGetFileInfoW(L"", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi), 
+                      SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
+        hIcon = sfi.hIcon;
+    }
+    
+    return hIcon;
+}
+
 // 处理WM_CREATE消息的函数
 void HandleCreateMessage(HWND hwnd) {
     InitializeCriticalSection(&g_fileListLock);
@@ -264,8 +304,22 @@ void HandleCreateMessage(HWND hwnd) {
     icex.dwICC = ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES;
     InitCommonControlsEx(&icex);
     
-    // 设置系统字体以支持中文
-    HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    // 创建自定义字体，使用设置中的字体大小
+    int fontSize = getFontSize();
+    LOGFONTW lf = {0};
+    lf.lfHeight = -MulDiv(fontSize, GetDeviceCaps(GetDC(hwnd), LOGPIXELSY), 72);
+    lf.lfWeight = FW_NORMAL;
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
+    lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
+    lf.lfQuality = DEFAULT_QUALITY;
+    lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
+    lstrcpyW(lf.lfFaceName, L"Microsoft YaHei"); // 使用微软雅黑字体以更好地支持中文
+    
+    HFONT hFont = CreateFontIndirectW(&lf);
+    if (!hFont) {
+        hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    }
     if (hFont) {
         SendMessage(hwnd, WM_SETFONT, (WPARAM)hFont, MAKELPARAM(TRUE, 0));
     }
@@ -367,14 +421,22 @@ void HandleCreateMessage(HWND hwnd) {
         SHGFI_ICON | SHGFI_SMALLICON);
     HICON hDriveIcon = sfi.hIcon;
 
+    // 创建硬盘图标
+    HICON hHardDriveIcon = createDriveIcon();
+
+    // 创建收藏夹图标（星号★）
+    HICON hFavoriteIcon = createFavoriteIcon();
+
     // 创建图像列表用于TreeView - 使用系统主题适配的图标尺寸
     HIMAGELIST hTreeImageList = ImageList_Create(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 
-        ILC_COLOR32 | ILC_MASK, 2, 10);
+        ILC_COLOR32 | ILC_MASK, 4, 10);
     // 设置图像列表的背景色为白色
     ImageList_SetBkColor(hTreeImageList, RGB(255, 255, 255));
     // 添加图标
     ImageList_AddIcon(hTreeImageList, hFolderIcon);
     ImageList_AddIcon(hTreeImageList, hDriveIcon);
+    ImageList_AddIcon(hTreeImageList, hHardDriveIcon);
+    ImageList_AddIcon(hTreeImageList, hFavoriteIcon);
     SendMessageW(g_treeView, TVM_SETIMAGELIST, TVSIL_NORMAL, (LPARAM)hTreeImageList);
     
     // 创建图像列表用于ListView
@@ -389,6 +451,8 @@ void HandleCreateMessage(HWND hwnd) {
     DestroyIcon(hFolderIcon);
     DestroyIcon(hFileIcon);
     DestroyIcon(hDriveIcon);
+    DestroyIcon(hHardDriveIcon);
+    DestroyIcon(hFavoriteIcon);
     
     // 设置ListView样式
     DWORD exStyles = SendMessageW(g_listView, LVM_GETEXTENDEDLISTVIEWSTYLE, 0, 0);

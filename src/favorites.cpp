@@ -586,9 +586,11 @@ HTREEITEM createFavoritesNode() {
     TVINSERTSTRUCTW tvInsert = {0};
     tvInsert.hParent = NULL;
     tvInsert.hInsertAfter = TVI_FIRST;
-    tvInsert.item.mask = TVIF_TEXT | TVIF_PARAM;
+    tvInsert.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_IMAGE | TVIF_SELECTEDIMAGE;
     tvInsert.item.pszText = (LPWSTR)L"★ 收藏夹";
     tvInsert.item.lParam = (LPARAM)FAVORITE_ITEM_MARKER;  // 特殊标记
+    tvInsert.item.iImage = 3;  // 收藏夹图标索引（图像列表中的第4个图标）
+    tvInsert.item.iSelectedImage = 3;  // 选中时也使用相同的图标
     
     HTREEITEM favoritesNode = TreeView_InsertItem(g_treeView, &tvInsert);
     
@@ -632,9 +634,11 @@ void loadFavoritesIntoTree() {
         TVINSERTSTRUCTW tvInsert = {0};
         tvInsert.hParent = g_favoritesNode;
         tvInsert.hInsertAfter = TVI_LAST;
-        tvInsert.item.mask = TVIF_TEXT | TVIF_PARAM;
+        tvInsert.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_IMAGE | TVIF_SELECTEDIMAGE;
         tvInsert.item.pszText = g_favorites[i].name;
         tvInsert.item.lParam = (LPARAM)&g_favorites[i];  // 存储指向收藏夹项的指针
+        tvInsert.item.iImage = 0;  // 文件夹图标索引（图像列表中的第1个图标）
+        tvInsert.item.iSelectedImage = 0;  // 选中时也使用相同的图标
         
         TreeView_InsertItem(g_treeView, &tvInsert);
     }

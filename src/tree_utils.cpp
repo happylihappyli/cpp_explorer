@@ -202,9 +202,26 @@ void updateDirectoryTree() {
         TVINSERTSTRUCTW tvis = {0};
         tvis.hParent = NULL;
         tvis.hInsertAfter = TVI_ROOT;
-        tvis.item.mask = TVIF_TEXT | TVIF_PARAM;
+        tvis.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_IMAGE | TVIF_SELECTEDIMAGE;
         tvis.item.pszText = drives[i];
         tvis.item.lParam = 0;  // 普通驱动器节点
+        
+        // 为C、D、E、F驱动器设置硬盘图标（索引2）
+        if (wcslen(drives[i]) >= 2 && drives[i][1] == L':') {
+            WCHAR driveLetter = drives[i][0];
+            if (driveLetter >= L'C' && driveLetter <= L'F') {
+                tvis.item.iImage = 2;  // 硬盘图标索引
+                tvis.item.iSelectedImage = 2;  // 选中时也使用相同的图标
+            } else {
+                // 其他驱动器使用默认驱动器图标（索引1）
+                tvis.item.iImage = 1;
+                tvis.item.iSelectedImage = 1;
+            }
+        } else {
+            // 默认使用驱动器图标
+            tvis.item.iImage = 1;
+            tvis.item.iSelectedImage = 1;
+        }
         
         HTREEITEM hDriveItem = TreeView_InsertItem(g_treeView, &tvis);
         if (hDriveItem) {

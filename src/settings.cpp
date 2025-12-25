@@ -8,6 +8,7 @@
 #include <sstream>
 
 static WCHAR g_editorPath[MAX_PATH] = L"D:\\Office\\Notepad_abc\\notepad_abc.exe";
+static int g_fontSize = 9;  // 默认字体大小
 static std::vector<FileAssociation> g_associations;
 static HWND g_hDialog = NULL;
 static HWND g_hEditEditor = NULL;
@@ -15,6 +16,7 @@ static HWND g_hListAssoc = NULL;
 static HWND g_hEditExt = NULL;
 static HWND g_hEditName = NULL;
 static HWND g_hEditPath = NULL;
+static HWND g_hEditFontSize = NULL;  // 字体大小编辑框
 
 void getSettingsFilePath(WCHAR* buffer, int bufferSize) {
     getExecutableDirectory(buffer, bufferSize);
@@ -27,6 +29,11 @@ void loadSettings() {
     
     // Load editor path
     GetPrivateProfileStringW(L"Settings", L"EditorPath", L"D:\\Office\\Notepad_abc\\notepad_abc.exe", g_editorPath, MAX_PATH, path);
+    
+    // Load font size
+    g_fontSize = GetPrivateProfileIntW(L"Settings", L"FontSize", 9, path);
+    if (g_fontSize < 6) g_fontSize = 6;
+    if (g_fontSize > 24) g_fontSize = 24;
 
     // Load associations
     g_associations.clear();
@@ -59,6 +66,11 @@ void saveSettings() {
     
     // Save editor path
     WritePrivateProfileStringW(L"Settings", L"EditorPath", g_editorPath, path);
+    
+    // Save font size
+    WCHAR fontSizeStr[16];
+    wsprintfW(fontSizeStr, L"%d", g_fontSize);
+    WritePrivateProfileStringW(L"Settings", L"FontSize", fontSizeStr, path);
 
     // Save associations
     // Clear section first
@@ -76,6 +88,17 @@ void getEditorPath(WCHAR* buffer, int bufferSize) {
 
 void setEditorPath(const WCHAR* path) {
     lstrcpyW(g_editorPath, path);
+    saveSettings();
+}
+
+int getFontSize() {
+    return g_fontSize;
+}
+
+void setFontSize(int size) {
+    if (size < 6) size = 6;
+    if (size > 24) size = 24;
+    g_fontSize = size;
     saveSettings();
 }
 
@@ -116,6 +139,7 @@ void removeFileAssociation(int index) {
 #define ID_BTN_REMOVE 1009
 #define ID_BTN_SAVE 1010
 #define ID_BTN_CANCEL 1011
+#define ID_EDIT_FONTSIZE 1012  // 字体大小编辑框
 
 void RefreshList() {
     SendMessage(g_hListAssoc, LB_RESETCONTENT, 0, 0);
@@ -137,32 +161,39 @@ LRESULT CALLBACK SettingsDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             SendMessage(g_hEditEditor, WM_SETFONT, (WPARAM)hFont, TRUE);
             CreateWindowW(L"BUTTON", L"浏览...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 400, 30, 80, 25, hwnd, (HMENU)ID_BTN_BROWSE_EDITOR, NULL, NULL);
 
+            // Font Size
+            CreateWindowW(L"STATIC", L"字体大小 (6-24):", WS_CHILD | WS_VISIBLE, 10, 65, 120, 20, hwnd, NULL, NULL, NULL);
+            WCHAR fontSizeStr[16];
+            wsprintfW(fontSizeStr, L"%d", g_fontSize);
+            g_hEditFontSize = CreateWindowW(L"EDIT", fontSizeStr, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER, 10, 85, 80, 25, hwnd, (HMENU)ID_EDIT_FONTSIZE, NULL, NULL);
+            SendMessage(g_hEditFontSize, WM_SETFONT, (WPARAM)hFont, TRUE);
+
             // Associations List
-            CreateWindowW(L"STATIC", L"文件关联设置:", WS_CHILD | WS_VISIBLE, 10, 70, 120, 20, hwnd, NULL, NULL, NULL);
-            g_hListAssoc = CreateWindowW(L"LISTBOX", NULL, WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 10, 90, 470, 150, hwnd, (HMENU)ID_LIST_ASSOC, NULL, NULL);
+            CreateWindowW(L"STATIC", L"文件关联设置:", WS_CHILD | WS_VISIBLE, 10, 120, 120, 20, hwnd, NULL, NULL, NULL);
+            g_hListAssoc = CreateWindowW(L"LISTBOX", NULL, WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 10, 140, 470, 150, hwnd, (HMENU)ID_LIST_ASSOC, NULL, NULL);
             SendMessage(g_hListAssoc, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Add/Edit Controls
-            CreateWindowW(L"STATIC", L"后缀名:", WS_CHILD | WS_VISIBLE, 10, 250, 60, 20, hwnd, NULL, NULL, NULL);
-            g_hEditExt = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 70, 250, 60, 25, hwnd, (HMENU)ID_EDIT_EXT, NULL, NULL);
+            CreateWindowW(L"STATIC", L"后缀名:", WS_CHILD | WS_VISIBLE, 10, 300, 60, 20, hwnd, NULL, NULL, NULL);
+            g_hEditExt = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 70, 300, 60, 25, hwnd, (HMENU)ID_EDIT_EXT, NULL, NULL);
             SendMessage(g_hEditExt, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            CreateWindowW(L"STATIC", L"名称:", WS_CHILD | WS_VISIBLE, 140, 250, 40, 20, hwnd, NULL, NULL, NULL);
-            g_hEditName = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 180, 250, 100, 25, hwnd, (HMENU)ID_EDIT_NAME, NULL, NULL);
+            CreateWindowW(L"STATIC", L"名称:", WS_CHILD | WS_VISIBLE, 140, 300, 40, 20, hwnd, NULL, NULL, NULL);
+            g_hEditName = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 180, 300, 100, 25, hwnd, (HMENU)ID_EDIT_NAME, NULL, NULL);
             SendMessage(g_hEditName, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            CreateWindowW(L"STATIC", L"程序路径:", WS_CHILD | WS_VISIBLE, 10, 285, 60, 20, hwnd, NULL, NULL, NULL);
-            g_hEditPath = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 70, 285, 310, 25, hwnd, (HMENU)ID_EDIT_PATH, NULL, NULL);
+            CreateWindowW(L"STATIC", L"程序路径:", WS_CHILD | WS_VISIBLE, 10, 335, 60, 20, hwnd, NULL, NULL, NULL);
+            g_hEditPath = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 70, 335, 310, 25, hwnd, (HMENU)ID_EDIT_PATH, NULL, NULL);
             SendMessage(g_hEditPath, WM_SETFONT, (WPARAM)hFont, TRUE);
-            CreateWindowW(L"BUTTON", L"浏览...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 390, 285, 80, 25, hwnd, (HMENU)ID_BTN_BROWSE_PATH, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"浏览...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 390, 335, 80, 25, hwnd, (HMENU)ID_BTN_BROWSE_PATH, NULL, NULL);
 
             // Action Buttons
-            CreateWindowW(L"BUTTON", L"添加/更新", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 325, 100, 25, hwnd, (HMENU)ID_BTN_ADD, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"移除选中", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 120, 325, 100, 25, hwnd, (HMENU)ID_BTN_REMOVE, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"添加/更新", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 375, 100, 25, hwnd, (HMENU)ID_BTN_ADD, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"移除选中", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 120, 375, 100, 25, hwnd, (HMENU)ID_BTN_REMOVE, NULL, NULL);
 
             // Dialog Buttons
-            CreateWindowW(L"BUTTON", L"保存全部", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 150, 370, 80, 25, hwnd, (HMENU)ID_BTN_SAVE, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 250, 370, 80, 25, hwnd, (HMENU)ID_BTN_CANCEL, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"保存全部", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 150, 420, 80, 25, hwnd, (HMENU)ID_BTN_SAVE, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 250, 420, 80, 25, hwnd, (HMENU)ID_BTN_CANCEL, NULL, NULL);
 
             RefreshList();
             break;
@@ -225,6 +256,13 @@ LRESULT CALLBACK SettingsDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                 WCHAR buffer[MAX_PATH];
                 GetWindowTextW(g_hEditEditor, buffer, MAX_PATH);
                 lstrcpyW(g_editorPath, buffer);
+                
+                // Save font size
+                WCHAR fontSizeStr[16];
+                GetWindowTextW(g_hEditFontSize, fontSizeStr, 16);
+                int fontSize = _wtoi(fontSizeStr);
+                setFontSize(fontSize);
+                
                 saveSettings(); // This saves both editor path and associations
                 DestroyWindow(hwnd);
             } else if (id == ID_BTN_CANCEL) {
@@ -269,7 +307,7 @@ void ShowSettingsDialog(HWND parent) {
     RECT rc;
     GetWindowRect(parent, &rc);
     int w = 500;
-    int h = 450;
+    int h = 500;  // 增加高度以容纳字体大小选项
     int x = rc.left + (rc.right - rc.left - w) / 2;
     int y = rc.top + (rc.bottom - rc.top - h) / 2;
     
