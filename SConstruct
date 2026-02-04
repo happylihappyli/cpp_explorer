@@ -62,7 +62,7 @@ env['PROGPREFIX'] = ''
 env['PROGSUFFIX'] = '.exe'
 
 # 配置资源编译器 (使用 llvm-rc)
-env['RC'] = 'llvm-rc'
+env['RC'] = r'"C:\Program Files\LLVM\bin\llvm-rc.exe"'
 env['RCCOM'] = '$RC $RCFLAGS /FO $TARGET $SOURCE'
 
 # 显式编译资源文件

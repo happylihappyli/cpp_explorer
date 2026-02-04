@@ -11,7 +11,7 @@
 #include "log.h"
 
 // 全局变量定义
-FavoriteItem g_favorites[MAX_FAVORITES] = { 0 };
+FavoriteItem g_favorites[MAX_FAVORITES] = {};
 int g_favoriteCount = 0;
 // HTREEITEM g_favoritesNode = NULL; // 移动到explorer.cpp中定义
 

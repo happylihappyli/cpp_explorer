@@ -61,9 +61,9 @@ void updateDiskUsageRatio(const WCHAR* path) {
         return;
     }
 
-    ULARGE_INTEGER freeBytesAvailable = {0};
-    ULARGE_INTEGER totalBytes = {0};
-    ULARGE_INTEGER totalFreeBytes = {0};
+    ULARGE_INTEGER freeBytesAvailable = {};
+    ULARGE_INTEGER totalBytes = {};
+    ULARGE_INTEGER totalFreeBytes = {};
 
     if (GetDiskFreeSpaceExW(rootPath, &freeBytesAvailable, &totalBytes, &totalFreeBytes)) {
         if (totalBytes.QuadPart > 0) {
@@ -503,9 +503,9 @@ LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam) {
                         // 检查是否为驱动器节点（格式为 "X:\"）
                         if (wcslen(fullPath) == 3 && fullPath[1] == L':' && fullPath[2] == L'\\') {
                             // 获取驱动器的空闲空间
-                            ULARGE_INTEGER freeBytesAvailable = {0};
-                            ULARGE_INTEGER totalBytes = {0};
-                            ULARGE_INTEGER totalFreeBytes = {0};
+                            ULARGE_INTEGER freeBytesAvailable = {};
+                            ULARGE_INTEGER totalBytes = {};
+                            ULARGE_INTEGER totalFreeBytes = {};
                             
                             if (GetDiskFreeSpaceExW(fullPath, &freeBytesAvailable, &totalBytes, &totalFreeBytes)) {
                                 // 格式化空闲空间显示（转换为GB或MB）
