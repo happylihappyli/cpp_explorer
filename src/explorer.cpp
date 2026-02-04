@@ -2,8 +2,10 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <wchar.h>
 #include <stdio.h>
+#include <math.h>
 #include <vector>
 #include <string>
 #include "favorites.h"
@@ -12,12 +14,140 @@
 #include "tree_utils.h"
 #include "log.h"
 #include "settings.h"
+#include "registry_integration.h"
+#include "context_menu_manager.h"
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
 
+// DropSource Implementation
+class CDropSource : public IDropSource {
+public:
+    STDMETHODIMP QueryInterface(REFIID riid, void **ppv) {
+        if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_IDropSource)) {
+            *ppv = this;
+            AddRef();
+            return S_OK;
+        }
+        *ppv = NULL;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() { return InterlockedIncrement(&m_cRef); }
+    STDMETHODIMP_(ULONG) Release() {
+        LONG cRef = InterlockedDecrement(&m_cRef);
+        if (cRef == 0) delete this;
+        return cRef;
+    }
+
+    STDMETHODIMP QueryContinueDrag(BOOL fEscapePressed, DWORD grfKeyState) {
+        if (fEscapePressed) return DRAGDROP_S_CANCEL;
+        if (!(grfKeyState & MK_LBUTTON)) return DRAGDROP_S_DROP;
+        return S_OK;
+    }
+
+    STDMETHODIMP GiveFeedback(DWORD dwEffect) { return DRAGDROP_S_USEDEFAULTCURSORS; }
+
+    CDropSource() : m_cRef(1) {}
+    virtual ~CDropSource() {}
+private:
+    LONG m_cRef;
+};
+
+// DataObject Implementation
+class CDataObject : public IDataObject {
+public:
+    STDMETHODIMP QueryInterface(REFIID riid, void **ppv) {
+        if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_IDataObject)) {
+            *ppv = this;
+            AddRef();
+            return S_OK;
+        }
+        *ppv = NULL;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() { return InterlockedIncrement(&m_cRef); }
+    STDMETHODIMP_(ULONG) Release() {
+        LONG cRef = InterlockedDecrement(&m_cRef);
+        if (cRef == 0) delete this;
+        return cRef;
+    }
+
+    STDMETHODIMP GetData(FORMATETC *pformatetcIn, STGMEDIUM *pmedium) {
+        if (!pformatetcIn || !pmedium) return E_INVALIDARG;
+        
+        if (pformatetcIn->cfFormat == CF_HDROP && (pformatetcIn->tymed & TYMED_HGLOBAL)) {
+            // Calculate size needed
+            size_t size = sizeof(DROPFILES);
+            for (const auto& file : m_files) {
+                size += (file.length() + 1) * sizeof(WCHAR);
+            }
+            size += sizeof(WCHAR); // Double null
+
+            HGLOBAL hGlobal = GlobalAlloc(GHND, size);
+            if (!hGlobal) return E_OUTOFMEMORY;
+
+            DROPFILES* pDropFiles = (DROPFILES*)GlobalLock(hGlobal);
+            pDropFiles->pFiles = sizeof(DROPFILES);
+            pDropFiles->pt.x = 0;
+            pDropFiles->pt.y = 0;
+            pDropFiles->fNC = FALSE;
+            pDropFiles->fWide = TRUE;
+
+            WCHAR* pPath = (WCHAR*)((BYTE*)pDropFiles + sizeof(DROPFILES));
+            for (const auto& file : m_files) {
+                lstrcpyW(pPath, file.c_str());
+                pPath += file.length() + 1;
+            }
+            *pPath = 0; // Final null
+
+            GlobalUnlock(hGlobal);
+
+            pmedium->tymed = TYMED_HGLOBAL;
+            pmedium->hGlobal = hGlobal;
+            pmedium->pUnkForRelease = NULL;
+            return S_OK;
+        }
+        return DV_E_FORMATETC;
+    }
+
+    STDMETHODIMP GetDataHere(FORMATETC *pformatetc, STGMEDIUM *pmedium) { return E_NOTIMPL; }
+    STDMETHODIMP QueryGetData(FORMATETC *pformatetc) {
+        if (pformatetc->cfFormat == CF_HDROP && (pformatetc->tymed & TYMED_HGLOBAL)) return S_OK;
+        return DV_E_FORMATETC;
+    }
+    STDMETHODIMP GetCanonicalFormatEtc(FORMATETC *pformatectIn, FORMATETC *pformatetcOut) { return E_NOTIMPL; }
+    STDMETHODIMP SetData(FORMATETC *pformatetc, STGMEDIUM *pmedium, BOOL fRelease) { return E_NOTIMPL; }
+    
+    STDMETHODIMP EnumFormatEtc(DWORD dwDirection, IEnumFORMATETC **ppenumFormatEtc) {
+        if (dwDirection == DATADIR_GET) {
+            FORMATETC fmt = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+            return SHCreateStdEnumFmtEtc(1, &fmt, ppenumFormatEtc);
+        }
+        return E_NOTIMPL;
+    }
+    
+    STDMETHODIMP DAdvise(FORMATETC *pformatetc, DWORD advf, IAdviseSink *pAdvSink, DWORD *pdwConnection) { return OLE_E_ADVISENOTSUPPORTED; }
+    STDMETHODIMP DUnadvise(DWORD dwConnection) { return OLE_E_ADVISENOTSUPPORTED; }
+    STDMETHODIMP EnumDAdvise(IEnumSTATDATA **ppenumAdvise) { return OLE_E_ADVISENOTSUPPORTED; }
+
+    CDataObject(const std::vector<std::wstring>& files) : m_cRef(1), m_files(files) {}
+    virtual ~CDataObject() {}
+private:
+    LONG m_cRef;
+    std::vector<std::wstring> m_files;
+};
+
 #define IDM_DEBUG 1001
 #define IDM_STATUSBAR 1002
+#define IDM_NEW_TAB 1003
+#define IDM_CLOSE_TAB 1004
+#define IDM_NEW_WINDOW 1005
+#define IDM_TILE_WINDOWS 1006
+#define IDM_NEW_DISK_DETAILS 1007
+#define IDM_SET_DEFAULT 1008
+#define IDM_RESTORE_DEFAULT 1009
+#define IDM_CONTEXT_MENU_MGR 1010
+#define ID_BTN_NEW_TAB 2001
 #define WM_APP_DIRSIZE (WM_APP + 1)
 #define WM_APP_LISTITEM (WM_APP + 2)
 #define WM_APP_LISTDONE (WM_APP + 3)
@@ -106,6 +236,7 @@ BOOL AllocateConsoleIfNeeded() {
 
 // 全局变量
 HWND g_mainWindow = NULL;
+int g_diskScrollY = 0; // 磁盘详情页滚动位置
 HWND g_treeView = NULL;  // 左侧目录树
 HWND g_listView = NULL;  // 右侧文件列表
 HWND g_addressBar = NULL;
@@ -113,6 +244,7 @@ HWND g_goButton = NULL;
 HWND g_backButton = NULL;
 HWND g_forwardButton = NULL;
 HWND g_upButton = NULL;
+HWND g_newTabButton = NULL;
 HWND g_openInExplorerButton = NULL;
 HWND g_settingsButton = NULL;
 HWND g_addFavoriteButton = NULL;  // 添加收藏按钮
@@ -140,9 +272,63 @@ std::vector<ItemSortData> g_fileList;
 BOOL g_enumInProgress = FALSE;
 BOOL g_timerActive = FALSE;
 BOOL g_sorting = FALSE;
+BOOL g_isNavigatingFromTree = FALSE;
+
+// Tab management
+struct TabInfo {
+    WCHAR path[MAX_PATH];
+    std::vector<ItemSortData> fileList;
+};
+std::vector<TabInfo> g_tabs;
+int g_currentTabIndex = -1;
+HWND g_tabCtrl = NULL;
+
+// Drag and Drop Globals
+ BOOL g_isDragging = FALSE;
+ std::vector<std::wstring> g_draggedFiles;
+ HCURSOR g_hCursorCopy = NULL;
+ HCURSOR g_hCursorMove = NULL;
+ int g_hoverTab = -1;
+ DWORD g_hoverStartTime = 0;
+ 
+ void updateFileList(); // Forward declaration
+
+ // Helper to perform file copy/move
+void PerformFileOperation(const std::vector<std::wstring>& files, const WCHAR* destPath, BOOL isMove) {
+    if (files.empty() || !destPath || !*destPath) return;
+
+    // Double-null terminated string for SHFileOperation
+    size_t totalLen = 0;
+    for (const auto& file : files) totalLen += file.length() + 1;
+    totalLen += 1; // Final null
+
+    std::vector<WCHAR> sourceBuffer(totalLen, 0);
+    WCHAR* p = sourceBuffer.data();
+    for (const auto& file : files) {
+        lstrcpyW(p, file.c_str());
+        p += file.length() + 1;
+    }
+
+    SHFILEOPSTRUCTW sfo = {0};
+    sfo.hwnd = g_mainWindow;
+    sfo.wFunc = isMove ? FO_MOVE : FO_COPY;
+    sfo.pFrom = sourceBuffer.data();
+    sfo.pTo = destPath;
+    sfo.fFlags = FOF_ALLOWUNDO | FOF_SIMPLEPROGRESS;
+
+    SHFileOperationW(&sfo);
+    
+    // Refresh
+    updateFileList();
+}
 
 // 函数声明
 void HandleGoButtonClick(HWND hwnd);
+void updateFileList();
+void SwitchToTab(int index);
+void HandleSizeMessage(HWND hwnd, WPARAM wParam, LPARAM lParam);
+void AddNewTab(const WCHAR* path);
+void CloseTab(int index);
 void HandleBackButtonClick();
 void HandleFavoriteCommands(WPARAM wParam);
 void HandleListViewDoubleClick(HWND hwnd, LPARAM lParam);
@@ -161,11 +347,35 @@ void getCurrentDirectory(WCHAR* buffer, DWORD bufferSize) {
 void setCurrentDirectory(const WCHAR* path) {
     SetCurrentDirectoryW(path);
     lstrcpyW(g_currentPath, path);
+    updateDiskUsageRatio(path);
     InterlockedIncrement(&g_dirSizeGen);
     
     // 更新地址栏
     if (g_addressBar) {
         SetWindowTextW(g_addressBar, path);
+    }
+
+    // Update Tab Title
+    if (g_currentTabIndex >= 0 && g_tabCtrl) {
+        const WCHAR* p = wcsrchr(path, L'\\');
+        const WCHAR* name = p ? p + 1 : path;
+        if (!*name) name = path; // Root like C:\\
+        if (!*name) name = L"此电脑";
+        // If "磁盘详情", keep it
+        if (wcscmp(path, L"磁盘详情") == 0) name = L"磁盘详情";
+        
+        TCITEMW tie;
+        tie.mask = TCIF_TEXT;
+        tie.pszText = (LPWSTR)name;
+        TabCtrl_SetItem(g_tabCtrl, g_currentTabIndex, &tie);
+        
+        // Update internal tab state path
+        lstrcpyW(g_tabs[g_currentTabIndex].path, path);
+    }
+    
+    // Sync TreeView if not navigating from it
+    if (!g_isNavigatingFromTree) {
+        syncTreeViewWithPath(path);
     }
 }
 
@@ -184,11 +394,106 @@ void HideCustomTooltip();
 void updateFileList() {
     LogMessage(L"[DEBUG] updateFileList 开始，当前路径: %s", g_currentPath);
     
+    // 如果是右键菜单管理页面，不进行文件列表更新
+    if (wcscmp(g_currentPath, L"右键菜单管理") == 0) {
+        return;
+    }
+
     if (!g_listView) {
         LogMessage(L"[DEBUG] g_listView 为空，跳过更新");
         return;
     }
+
+    BOOL isDriveView = (g_currentPath[0] == L'\0' || wcscmp(g_currentPath, L"此电脑") == 0 || wcscmp(g_currentPath, L"磁盘详情") == 0);
     
+    // Setup Columns based on view type
+    LVCOLUMNW col = {0};
+    col.mask = LVCF_TEXT;
+    
+    if (isDriveView) {
+        col.pszText = (LPWSTR)L"磁盘";
+        SendMessageW(g_listView, LVM_SETCOLUMNW, 0, (LPARAM)&col);
+
+        col.pszText = (LPWSTR)L"总大小";
+        SendMessageW(g_listView, LVM_SETCOLUMNW, 1, (LPARAM)&col);
+        SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 1, 150); // Total Size Width
+        
+        col.pszText = (LPWSTR)L"使用情况"; // Was Type
+        SendMessageW(g_listView, LVM_SETCOLUMNW, 2, (LPARAM)&col);
+        SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 2, 200); // Usage Width (enough for 120px bar + text)
+
+        col.pszText = (LPWSTR)L"可用空间";
+        SendMessageW(g_listView, LVM_SETCOLUMNW, 3, (LPARAM)&col);
+        SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 3, 150); // Free Space Width
+        
+        // Hide Created Time Column
+        SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 4, 0);
+    } else {
+        col.pszText = (LPWSTR)L"名称";
+        SendMessageW(g_listView, LVM_SETCOLUMNW, 0, (LPARAM)&col);
+    
+        col.pszText = (LPWSTR)L"大小";
+        SendMessageW(g_listView, LVM_SETCOLUMNW, 1, (LPARAM)&col);
+        SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 1, 150); // Restore default
+        
+        col.pszText = (LPWSTR)L"类型";
+        SendMessageW(g_listView, LVM_SETCOLUMNW, 2, (LPARAM)&col);
+        SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 2, 100); // Restore default
+    
+        col.pszText = (LPWSTR)L"修改时间";
+        SendMessageW(g_listView, LVM_SETCOLUMNW, 3, (LPARAM)&col);
+        SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 3, 150); // Restore default
+    
+        col.pszText = (LPWSTR)L"创建时间";
+        SendMessageW(g_listView, LVM_SETCOLUMNW, 4, (LPARAM)&col);
+        SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 4, 150); // Restore default
+    }
+    
+    // Handle Drive List (Empty Path or "此电脑" or "磁盘详情")
+    if (isDriveView) {
+        SendMessageW(g_listView, LVM_SETITEMCOUNT, 0, LVSICF_NOINVALIDATEALL);
+        InvalidateRect(g_listView, NULL, TRUE);
+        UpdateWindow(g_listView);
+        
+        EnterCriticalSection(&g_fileListLock);
+        g_fileList.clear();
+        
+        DriveInfo drives[26];
+        int count = getDriveList(drives, 26);
+        for (int i=0; i<count; i++) {
+            ItemSortData item;
+            item.name = std::wstring(drives[i].letter); // "C:\"
+            if (drives[i].volName[0]) {
+                item.name += L" (";
+                item.name += drives[i].volName;
+                item.name += L")";
+            }
+            item.isDir = TRUE; 
+            item.sizeNumeric = drives[i].totalBytes.QuadPart;
+            item.freeSpace = drives[i].freeBytes.QuadPart;
+            item.totalSpace = drives[i].totalBytes.QuadPart;
+            item.created.dwLowDateTime = 0;
+            item.created.dwHighDateTime = 0;
+            item.modified.dwLowDateTime = 0;
+            item.modified.dwHighDateTime = 0;
+            g_fileList.push_back(item);
+        }
+        LeaveCriticalSection(&g_fileListLock);
+        
+        SendMessageW(g_listView, LVM_SETITEMCOUNT, (WPARAM)g_fileList.size(), LVSICF_NOINVALIDATEALL);
+        InvalidateRect(g_listView, NULL, TRUE);
+        
+        // Update Tab Title
+        if (g_currentTabIndex >= 0 && g_tabCtrl) {
+             TCITEMW tie;
+             tie.mask = TCIF_TEXT;
+             tie.pszText = (LPWSTR)(wcscmp(g_currentPath, L"磁盘详情") == 0 ? L"磁盘详情" : L"此电脑");
+             TabCtrl_SetItem(g_tabCtrl, g_currentTabIndex, &tie);
+        }
+        g_enumInProgress = FALSE;
+        return;
+    }
+
     LogMessage(L"[DEBUG] 清空ListView现有项目");
     // Virtual List: Reset count to 0
     SendMessageW(g_listView, LVM_SETITEMCOUNT, 0, LVSICF_NOINVALIDATEALL);
@@ -300,6 +605,236 @@ HICON createFavoriteIcon() {
     return hIcon;
 }
 
+// Tab helper functions
+void SaveCurrentTabState() {
+    if (g_currentTabIndex >= 0 && g_currentTabIndex < (int)g_tabs.size()) {
+        lstrcpyW(g_tabs[g_currentTabIndex].path, g_currentPath);
+        EnterCriticalSection(&g_fileListLock);
+        g_tabs[g_currentTabIndex].fileList = g_fileList;
+        LeaveCriticalSection(&g_fileListLock);
+    }
+}
+
+void SwitchToTab(int index) {
+    if (index < 0 || index >= (int)g_tabs.size()) return;
+    
+    // Save current if switching from a valid tab
+    if (g_currentTabIndex >= 0) {
+        SaveCurrentTabState();
+    }
+    
+    // Switch
+    g_currentTabIndex = index;
+    if (g_tabCtrl) TabCtrl_SetCurSel(g_tabCtrl, index);
+    
+    // Restore
+    lstrcpyW(g_currentPath, g_tabs[index].path);
+
+    // Check if it's the Context Menu Manager tab
+    if (wcscmp(g_currentPath, L"右键菜单管理") == 0) {
+        ShowContextMenuManager(TRUE);
+        if (g_listView) ShowWindow(g_listView, SW_HIDE);
+        if (g_treeView) ShowWindow(g_treeView, SW_HIDE);
+        if (g_addressBar) SetWindowTextW(g_addressBar, L"右键菜单管理");
+        
+        // Force layout update
+        if (g_tabCtrl) {
+            HWND hwnd = GetParent(g_tabCtrl);
+            if (hwnd) {
+                 RECT rc;
+                 GetClientRect(hwnd, &rc);
+                 HandleSizeMessage(hwnd, 0, MAKELPARAM(rc.right, rc.bottom));
+            }
+        }
+        return;
+    } else {
+        ShowContextMenuManager(FALSE);
+        if (g_listView) ShowWindow(g_listView, SW_SHOW);
+        // TreeView visibility will be handled by HandleSizeMessage
+    }
+
+    EnterCriticalSection(&g_fileListLock);
+    g_fileList = g_tabs[index].fileList;
+    LeaveCriticalSection(&g_fileListLock);
+    
+    // Update UI
+    if (g_addressBar) SetWindowTextW(g_addressBar, g_currentPath);
+    if (g_listView) {
+        SendMessageW(g_listView, LVM_SETITEMCOUNT, (WPARAM)g_fileList.size(), LVSICF_NOINVALIDATEALL);
+        InvalidateRect(g_listView, NULL, TRUE);
+        UpdateWindow(g_listView);
+    }
+    
+    // If empty list and empty path, populate drive list
+    if (g_fileList.empty() && (g_currentPath[0] == L'\0' || wcscmp(g_currentPath, L"此电脑") == 0 || wcscmp(g_currentPath, L"磁盘详情") == 0)) {
+        updateFileList();
+    } else {
+        // Even if we don't update file list, we MUST update columns based on current path
+        // because we might be switching from a Drive View tab to a Normal View tab or vice versa
+        BOOL isDriveView = (g_currentPath[0] == L'\0' || wcscmp(g_currentPath, L"此电脑") == 0 || wcscmp(g_currentPath, L"磁盘详情") == 0);
+        
+        LVCOLUMNW col = {0};
+        col.mask = LVCF_TEXT;
+        
+        if (isDriveView) {
+            col.pszText = (LPWSTR)L"磁盘";
+            SendMessageW(g_listView, LVM_SETCOLUMNW, 0, (LPARAM)&col);
+
+            col.pszText = (LPWSTR)L"总大小";
+            SendMessageW(g_listView, LVM_SETCOLUMNW, 1, (LPARAM)&col);
+            SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 1, 150); 
+            
+            col.pszText = (LPWSTR)L"使用情况"; 
+            SendMessageW(g_listView, LVM_SETCOLUMNW, 2, (LPARAM)&col);
+            SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 2, 200);
+
+            col.pszText = (LPWSTR)L"可用空间";
+            SendMessageW(g_listView, LVM_SETCOLUMNW, 3, (LPARAM)&col);
+            SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 3, 150); 
+            
+            SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 4, 0);
+        } else {
+            col.pszText = (LPWSTR)L"名称";
+            SendMessageW(g_listView, LVM_SETCOLUMNW, 0, (LPARAM)&col);
+        
+            col.pszText = (LPWSTR)L"大小";
+            SendMessageW(g_listView, LVM_SETCOLUMNW, 1, (LPARAM)&col);
+            SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 1, 150); 
+            
+            col.pszText = (LPWSTR)L"类型";
+            SendMessageW(g_listView, LVM_SETCOLUMNW, 2, (LPARAM)&col);
+            SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 2, 100); 
+        
+            col.pszText = (LPWSTR)L"修改时间";
+            SendMessageW(g_listView, LVM_SETCOLUMNW, 3, (LPARAM)&col);
+            SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 3, 150); 
+        
+            col.pszText = (LPWSTR)L"创建时间";
+            SendMessageW(g_listView, LVM_SETCOLUMNW, 4, (LPARAM)&col);
+            SendMessageW(g_listView, LVM_SETCOLUMNWIDTH, 4, 150); 
+            
+            // Sync TreeView
+            syncTreeViewWithPath(g_currentPath);
+        }
+    }
+    
+    // Force layout update to hide/show TreeView based on new path
+    if (g_tabCtrl) {
+        HWND hwnd = GetParent(g_tabCtrl);
+        if (hwnd) {
+             RECT rc;
+             GetClientRect(hwnd, &rc);
+             HandleSizeMessage(hwnd, 0, MAKELPARAM(rc.right, rc.bottom));
+        }
+    }
+}
+
+void AddNewTab(const WCHAR* path) {
+    TabInfo info;
+    lstrcpyW(info.path, path ? path : L"");
+    g_tabs.push_back(info);
+    
+    int newIndex = (int)g_tabs.size() - 1;
+    
+    if (g_tabCtrl) {
+        TCITEMW tie;
+        tie.mask = TCIF_TEXT;
+        tie.pszText = (LPWSTR)(path && *path ? path : L"此电脑");
+        TabCtrl_InsertItem(g_tabCtrl, newIndex, &tie);
+    }
+    
+    SwitchToTab(newIndex);
+}
+
+void CloseTab(int index) {
+    if (index < 0 || index >= (int)g_tabs.size()) return;
+    if (g_tabs.size() <= 1) return; // Don't close last tab
+    
+    g_tabs.erase(g_tabs.begin() + index);
+    if (g_tabCtrl) TabCtrl_DeleteItem(g_tabCtrl, index);
+    
+    if (g_currentTabIndex >= index) {
+        g_currentTabIndex--;
+    }
+    if (g_currentTabIndex < 0) g_currentTabIndex = 0;
+    
+    SwitchToTab(g_currentTabIndex);
+}
+
+void HandleNewWindow() {
+    WCHAR exePath[MAX_PATH];
+    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    
+    STARTUPINFOW si = {sizeof(si)};
+    PROCESS_INFORMATION pi = {0};
+    
+    if (CreateProcessW(exePath, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+}
+
+BOOL CALLBACK TileWindowsEnumProc(HWND hwnd, LPARAM lParam) {
+    std::vector<HWND>* windows = (std::vector<HWND>*)lParam;
+    WCHAR className[256];
+    if (GetClassNameW(hwnd, className, 256)) {
+        if (wcscmp(className, L"ExplorerWindowClass") == 0 && IsWindowVisible(hwnd)) {
+            windows->push_back(hwnd);
+        }
+    }
+    return TRUE;
+}
+
+void HandleTileWindows() {
+    std::vector<HWND> windows;
+    EnumWindows(TileWindowsEnumProc, (LPARAM)&windows);
+    
+    // Smart logic: If only 1 window but multiple tabs, split the current tab into a new window
+    if (windows.size() == 1 && g_tabs.size() > 1) {
+        // Get current path
+        WCHAR cmdLine[MAX_PATH + 20];
+        wsprintfW(cmdLine, L"\"%s\"", g_currentPath); // Quote path
+        
+        // Launch new process
+        WCHAR exePath[MAX_PATH];
+        GetModuleFileNameW(NULL, exePath, MAX_PATH);
+        
+        SHELLEXECUTEINFOW sei = { sizeof(sei) };
+        sei.cbSize = sizeof(sei);
+        sei.lpFile = exePath;
+        sei.lpParameters = cmdLine;
+        sei.nShow = SW_SHOWNORMAL;
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+        ShellExecuteExW(&sei);
+        
+        // Close current tab in this window
+        CloseTab(g_currentTabIndex);
+        
+        // Wait for new window to appear (simple retry loop)
+        for (int i = 0; i < 15; i++) {
+            Sleep(200);
+            windows.clear();
+            EnumWindows(TileWindowsEnumProc, (LPARAM)&windows);
+            if (windows.size() > 1) break;
+        }
+    }
+
+    if (windows.empty()) return;
+    
+    RECT workArea;
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    
+    int width = (workArea.right - workArea.left) / (int)windows.size();
+    int height = workArea.bottom - workArea.top;
+    
+    for (size_t i = 0; i < windows.size(); i++) {
+        SetWindowPos(windows[i], NULL, 
+            workArea.left + (int)i * width, workArea.top, 
+            width, height, 
+            SWP_NOZORDER | SWP_SHOWWINDOW);
+    }
+}
+
 // 处理WM_CREATE消息的函数
 void HandleCreateMessage(HWND hwnd) {
     InitializeCriticalSection(&g_fileListLock);
@@ -329,6 +864,39 @@ void HandleCreateMessage(HWND hwnd) {
         SendMessage(hwnd, WM_SETFONT, (WPARAM)hFont, MAKELPARAM(TRUE, 0));
     }
     
+    // Create separate font for tabs (smaller)
+    LOGFONTW lfTab = lf;
+    // Use a slightly smaller font for tabs, or fixed 9pt if main font is large
+    int tabFontSize = fontSize > 10 ? fontSize - 2 : fontSize;
+    if (tabFontSize > 9) tabFontSize = 9; // Cap at 9pt for compact tabs
+    
+    lfTab.lfHeight = -MulDiv(tabFontSize, GetDeviceCaps(GetDC(hwnd), LOGPIXELSY), 72);
+    HFONT hTabFont = CreateFontIndirectW(&lfTab);
+    
+    // 创建Tab Control
+    g_tabCtrl = CreateWindowExW(
+        0, WC_TABCONTROLW, L"",
+        WS_CHILD | WS_VISIBLE | TCS_TABS | TCS_FOCUSNEVER,
+        0, 0, 800, 25,
+        hwnd, NULL, NULL, NULL
+    );
+    if (hTabFont) {
+        SendMessage(g_tabCtrl, WM_SETFONT, (WPARAM)hTabFont, MAKELPARAM(TRUE, 0));
+    } else if (hFont) {
+        SendMessage(g_tabCtrl, WM_SETFONT, (WPARAM)hFont, MAKELPARAM(TRUE, 0));
+    }
+    // Initialize first tab
+    // 使用启动参数中指定的路径（如果有），否则默认为"此电脑"
+    if (wcslen(g_currentPath) > 0 && wcscmp(g_currentPath, L"此电脑") != 0) {
+        AddNewTab(g_currentPath);
+    } else {
+        AddNewTab(L"");
+    }
+    AddNewTab(L"磁盘详情");
+    
+    // 默认切换回第一个标签页 ("此电脑")
+    SwitchToTab(0);
+
     // 创建后退按钮
     g_backButton = CreateWindowExW(
         0, L"BUTTON", L"←",
@@ -353,11 +921,19 @@ void HandleCreateMessage(HWND hwnd) {
         hwnd, NULL, NULL, NULL
     );
 
+    // 创建新建标签页按钮
+    g_newTabButton = CreateWindowExW(
+        0, L"BUTTON", L"+",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        145, 10, 25, 25,
+        hwnd, (HMENU)ID_BTN_NEW_TAB, NULL, NULL
+    );
+
     // 创建地址栏
     g_addressBar = CreateWindowExW(
         0, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-        150, 10, 450, 25,
+        175, 10, 425, 25,
         hwnd, NULL, NULL, NULL
     );
     
@@ -518,6 +1094,9 @@ void HandleCreateMessage(HWND hwnd) {
     
     // 设置状态栏的初始文本
     SendMessageW(g_statusBar, WM_SETTEXT, 0, (LPARAM)L"就绪");
+    
+    // 初始化右键菜单管理器
+    InitContextMenuManager(hwnd);
 }
 
 // 处理WM_SIZE消息的函数
@@ -530,56 +1109,99 @@ void HandleSizeMessage(HWND hwnd, WPARAM wParam, LPARAM lParam) {
     int clientWidth = LOWORD(lParam);
     int clientHeight = HIWORD(lParam);
 
+    // 调整Tab Control大小
+    if (g_tabCtrl) MoveWindow(g_tabCtrl, 0, 0, clientWidth, 25, TRUE);
+    
+    int topOffset = 30; // Tab高度(25) + 间距(5)
+
     // 调整控件大小
-    if (g_backButton) MoveWindow(g_backButton, 10, 10, 40, 25, TRUE);
-    if (g_forwardButton) MoveWindow(g_forwardButton, 55, 10, 40, 25, TRUE);
-    if (g_upButton) MoveWindow(g_upButton, 100, 10, 40, 25, TRUE);
+    if (g_backButton) MoveWindow(g_backButton, 10, topOffset, 40, 25, TRUE);
+    if (g_forwardButton) MoveWindow(g_forwardButton, 55, topOffset, 40, 25, TRUE);
+    if (g_upButton) MoveWindow(g_upButton, 100, topOffset, 40, 25, TRUE);
+    if (g_newTabButton) MoveWindow(g_newTabButton, 145, topOffset, 25, 25, TRUE);
     
     int settingsBtnX = clientWidth - 70;
     int openBtnX = clientWidth - 135;
     int goBtnX = clientWidth - 200;
 
-    if (g_goButton) MoveWindow(g_goButton, goBtnX, 10, 60, 25, TRUE);
-    if (g_openInExplorerButton) MoveWindow(g_openInExplorerButton, openBtnX, 10, 60, 25, TRUE);
-    if (g_settingsButton) MoveWindow(g_settingsButton, settingsBtnX, 10, 60, 25, TRUE);
+    if (g_goButton) MoveWindow(g_goButton, goBtnX, topOffset, 60, 25, TRUE);
+    if (g_openInExplorerButton) MoveWindow(g_openInExplorerButton, openBtnX, topOffset, 60, 25, TRUE);
+    if (g_settingsButton) MoveWindow(g_settingsButton, settingsBtnX, topOffset, 60, 25, TRUE);
 
     if (g_addressBar) {
-        int addrWidth = goBtnX - 150 - 10;
+        int addrWidth = goBtnX - 175 - 10;
         if (addrWidth < 0) addrWidth = 0;
-        MoveWindow(g_addressBar, 150, 10, addrWidth, 25, TRUE);
+        MoveWindow(g_addressBar, 175, topOffset, addrWidth, 25, TRUE);
     }
-    
-    // 不再调整收藏夹按钮大小，已移除该按钮
     
     // 确保分隔条位置在合理范围内
     if (g_splitterPos < 100) g_splitterPos = 100;
     if (g_splitterPos > clientWidth - 100) g_splitterPos = clientWidth - 100;
     
+    int contentY = topOffset + 35; // 工具栏高度(25) + 间距(10)
+
+    // Handle Context Menu Manager resizing
+    if (wcscmp(g_currentPath, L"右键菜单管理") == 0) {
+         RECT rcContent;
+         rcContent.left = 0;
+         rcContent.right = clientWidth;
+         rcContent.top = contentY;
+         rcContent.bottom = clientHeight - 35; // Status bar
+         ResizeContextMenuManager(rcContent);
+         
+         // Ensure others are hidden
+         if (g_treeView) ShowWindow(g_treeView, SW_HIDE);
+         if (g_listView) ShowWindow(g_listView, SW_HIDE);
+         
+         // Adjust status bar
+         if (g_statusBar) {
+            SetWindowPos(g_statusBar, NULL, 0, clientHeight - 35, clientWidth, 35, SWP_NOZORDER);
+         }
+         return;
+    }
+
+    BOOL isDiskDetails = (wcscmp(g_currentPath, L"磁盘详情") == 0);
+
     // 调整TreeView大小 (左侧目录树)
     if (g_treeView) {
-        // TreeView从x=10开始，宽度为 g_splitterPos - 10
-        // 高度减去状态栏高度(35像素)和顶部工具栏高度(45像素)
-        int treeHeight = clientHeight - 45 - 35;
-        if (treeHeight < 0) treeHeight = 0;
-        MoveWindow(g_treeView, 10, 50, g_splitterPos - 10, treeHeight, TRUE);
+        if (isDiskDetails) {
+            ShowWindow(g_treeView, SW_HIDE);
+        } else {
+            ShowWindow(g_treeView, SW_SHOW);
+            int treeHeight = clientHeight - contentY - 35;
+            if (treeHeight < 0) treeHeight = 0;
+            MoveWindow(g_treeView, 10, contentY, g_splitterPos - 10, treeHeight, TRUE);
+        }
     }
     
     // 调整ListView大小 (右侧文件列表)
     if (g_listView) {
-        // ListView从 g_splitterPos + SPLITTER_WIDTH 开始
-        int listViewX = g_splitterPos + SPLITTER_WIDTH;
-        int listViewWidth = clientWidth - listViewX - 10; // 右侧保留10像素边距
-        if (listViewWidth < 0) listViewWidth = 0;
-        // 高度减去状态栏高度(35像素)和顶部工具栏高度(45像素)
-        int listHeight = clientHeight - 45 - 35;
-        if (listHeight < 0) listHeight = 0;
+        int listHeight = clientHeight - contentY - 35;
         
-        MoveWindow(g_listView, listViewX, 50, listViewWidth, listHeight, TRUE);
+        // 如果是磁盘详情页，完全隐藏 ListView，预留全部空间给自定义绘制
+        if (isDiskDetails) {
+            MoveWindow(g_listView, 0, 0, 0, 0, TRUE);
+            ShowWindow(g_listView, SW_HIDE);
+        } else {
+            ShowWindow(g_listView, SW_SHOW);
+            
+            int listViewX = g_splitterPos + SPLITTER_WIDTH;
+            int listViewWidth = clientWidth - listViewX - 10;
+            if (listViewWidth < 0) listViewWidth = 0;
+            if (listHeight < 0) listHeight = 0;
+            
+            MoveWindow(g_listView, listViewX, contentY, listViewWidth, listHeight, TRUE);
+        }
     }
     
     // 调整状态栏大小（底部）
     if (g_statusBar) {
         SetWindowPos(g_statusBar, NULL, 0, clientHeight - 35, clientWidth, 35, SWP_NOZORDER);
+    }
+
+    // 如果是磁盘详情页，强制重绘整个窗口以更新布局
+    if (isDiskDetails) {
+        InvalidateRect(hwnd, NULL, TRUE);
     }
 }
 
@@ -737,6 +1359,221 @@ LRESULT CALLBACK StatusBarProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
+#include <math.h>
+
+// 绘制磁盘使用情况饼图
+void DrawDiskPieChart(HDC hdc, RECT rect) {
+    // 填充背景
+    HBRUSH bgBrush = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
+    FillRect(hdc, &rect, bgBrush);
+    DeleteObject(bgBrush);
+
+    // 仅在磁盘详情页显示
+    if (wcscmp(g_currentPath, L"磁盘详情") != 0) return;
+
+    EnterCriticalSection(&g_fileListLock);
+    size_t count = g_fileList.size();
+    if (count == 0) {
+        LeaveCriticalSection(&g_fileListLock);
+        return;
+    }
+
+    // 布局计算
+    int availableWidth = rect.right - rect.left;
+    int visibleHeight = rect.bottom - rect.top;
+    
+    // 如果没有足够空间，不绘制
+    if (availableWidth < 100 || visibleHeight < 50) {
+        LeaveCriticalSection(&g_fileListLock);
+        return;
+    }
+
+    // 计算网格布局
+    // 假设每个卡片宽度 300，高度 400 (包含饼图、条状图、文字)
+    int cardWidth = 300;
+    int cardHeight = 400;
+    int padding = 20;
+    
+    // 计算可以放多少列
+    int cols = (availableWidth - padding) / (cardWidth + padding);
+    if (cols < 1) cols = 1;
+    
+    // 计算内容总宽度
+    int totalContentWidth = cols * cardWidth + (cols - 1) * padding;
+    
+    // 计算总行数
+    int rows = (int)((count + cols - 1) / cols);
+    
+    // 计算总内容高度
+    int totalContentHeight = rows * (cardHeight + padding) + padding; // 底部留白
+    
+    // 更新滚动条信息
+    SCROLLINFO si = {0};
+    si.cbSize = sizeof(SCROLLINFO);
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+    si.nMin = 0;
+    si.nMax = totalContentHeight;
+    si.nPage = visibleHeight;
+    si.nPos = g_diskScrollY;
+    
+    // 如果内容高度超过可视高度，显示滚动条
+    if (totalContentHeight > visibleHeight) {
+        // 确保滚动位置不越界
+        if (g_diskScrollY > totalContentHeight - visibleHeight) {
+             g_diskScrollY = totalContentHeight - visibleHeight;
+             si.nPos = g_diskScrollY;
+        }
+
+        SetScrollInfo(g_mainWindow, SB_VERT, &si, TRUE);
+        ShowScrollBar(g_mainWindow, SB_VERT, TRUE);
+    } else {
+        // 内容完全可见，隐藏滚动条
+        ShowScrollBar(g_mainWindow, SB_VERT, FALSE);
+        g_diskScrollY = 0; // 重置滚动位置
+    }
+    
+    // 计算起始X坐标以居中
+    int startX = rect.left + (availableWidth - totalContentWidth) / 2;
+    if (startX < rect.left + padding) startX = rect.left + padding;
+    
+    int startY = rect.top + 20 - g_diskScrollY; // 应用滚动偏移
+
+    // 通用绘图资源
+    HBRUSH hFreeBrush = CreateSolidBrush(RGB(240, 240, 240)); // 浅灰背景
+    HPEN hNullPen = CreatePen(PS_NULL, 0, 0);
+    HPEN hBorderPen = CreatePen(PS_SOLID, 1, RGB(200, 200, 200));
+    HFONT hTitleFont = CreateFontW(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei");
+    HFONT hNormalFont = (HFONT)SelectObject(hdc, GetStockObject(DEFAULT_GUI_FONT));
+    int oldBkMode = SetBkMode(hdc, TRANSPARENT);
+
+    for (size_t i = 0; i < count; ++i) {
+        const ItemSortData& data = g_fileList[i];
+        
+        int col = i % cols;
+        int row = i / cols;
+        
+        int x = startX + col * (cardWidth + padding);
+        int y = startY + row * (cardHeight + padding);
+        
+        // 简单的可视区域剔除
+        if (y + cardHeight < rect.top || y > rect.bottom) {
+             continue; 
+        }
+
+        // 绘制卡片背景
+        RECT cardRect = {x, y, x + cardWidth, y + cardHeight};
+        FillRect(hdc, &cardRect, (HBRUSH)GetStockObject(WHITE_BRUSH));
+        
+        // 绘制卡片边框
+        HPEN hOldPen = (HPEN)SelectObject(hdc, hBorderPen);
+        HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        Rectangle(hdc, cardRect.left, cardRect.top, cardRect.right, cardRect.bottom);
+        SelectObject(hdc, hOldBrush);
+        SelectObject(hdc, hOldPen);
+
+        if (data.totalSpace > 0) {
+            double used = (double)(data.totalSpace - data.freeSpace);
+            double ratio = used / (double)data.totalSpace;
+            if (ratio < 0) ratio = 0;
+            if (ratio > 1) ratio = 1;
+
+            // 1. 标题 (盘符 + 卷标)
+            RECT titleRect = {x + 10, y + 10, x + cardWidth - 10, y + 40};
+            SelectObject(hdc, hTitleFont);
+            DrawTextW(hdc, data.name.c_str(), -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            SelectObject(hdc, hNormalFont);
+
+            // 2. 饼图区域
+            int pieSize = 180;
+            int pieX = x + (cardWidth - pieSize) / 2;
+            int pieY = y + 50;
+            int radius = pieSize / 2;
+            int cx = pieX + radius;
+            int cy = pieY + radius;
+
+            // 画背景圆 (可用空间)
+            hOldBrush = (HBRUSH)SelectObject(hdc, hFreeBrush);
+            hOldPen = (HPEN)SelectObject(hdc, hNullPen);
+            Ellipse(hdc, cx - radius, cy - radius, cx + radius, cy + radius);
+            SelectObject(hdc, hOldBrush);
+
+            // 画已用扇形
+            if (ratio > 0.001) {
+                COLORREF color;
+                if (ratio < 0.75) color = RGB(0, 120, 215); // 蓝
+                else if (ratio < 0.9) color = RGB(255, 165, 0); // 橙
+                else color = RGB(220, 0, 0); // 红
+
+                HBRUSH hUsedBrush = CreateSolidBrush(color);
+                hOldBrush = (HBRUSH)SelectObject(hdc, hUsedBrush);
+
+                int x1 = cx;
+                int y1 = cy - radius; // 12点
+
+                double angle = ratio * 2 * 3.1415926535;
+                int x2 = cx + (int)(radius * sin(angle));
+                int y2 = cy - (int)(radius * cos(angle));
+
+                if (ratio >= 0.999) {
+                    Ellipse(hdc, cx - radius, cy - radius, cx + radius, cy + radius);
+                } else {
+                    Pie(hdc, cx - radius, cy - radius, cx + radius, cy + radius, x2, y2, x1, y1);
+                }
+
+                SelectObject(hdc, hOldBrush);
+                DeleteObject(hUsedBrush);
+            }
+            SelectObject(hdc, hOldPen);
+
+            // 3. 详细信息文字
+            WCHAR szInfo[256];
+            swprintf_s(szInfo, 256, L"已用: %.1f GB (%.1f%%)\n可用: %.1f GB\n总计: %.1f GB", 
+                used / (1024.0*1024.0*1024.0),
+                ratio * 100.0,
+                (double)data.freeSpace / (1024.0*1024.0*1024.0),
+                (double)data.totalSpace / (1024.0*1024.0*1024.0));
+            
+            RECT infoRect = {x + 20, pieY + pieSize + 10, x + cardWidth - 20, pieY + pieSize + 80};
+            DrawTextW(hdc, szInfo, -1, &infoRect, DT_LEFT | DT_TOP);
+
+            // 4. 条状图
+            RECT barRect = {x + 20, infoRect.bottom + 10, x + cardWidth - 20, infoRect.bottom + 30};
+            
+            // 边框
+            hOldPen = (HPEN)SelectObject(hdc, hBorderPen);
+            hOldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            Rectangle(hdc, barRect.left, barRect.top, barRect.right, barRect.bottom);
+            SelectObject(hdc, hOldBrush);
+            SelectObject(hdc, hOldPen);
+            
+            // 填充
+            InflateRect(&barRect, -1, -1);
+            int barWidth = barRect.right - barRect.left;
+            int fillWidth = (int)(barWidth * ratio);
+            RECT fillRect = barRect;
+            fillRect.right = fillRect.left + fillWidth;
+            
+            COLORREF barColor;
+            if (ratio < 0.75) barColor = RGB(0, 120, 215);
+            else if (ratio < 0.9) barColor = RGB(255, 165, 0);
+            else barColor = RGB(220, 0, 0);
+            
+            HBRUSH hBarBrush = CreateSolidBrush(barColor);
+            FillRect(hdc, &fillRect, hBarBrush);
+            DeleteObject(hBarBrush);
+        }
+    }
+
+    SelectObject(hdc, hNormalFont); // Restore font
+    DeleteObject(hTitleFont);
+    DeleteObject(hFreeBrush);
+    DeleteObject(hNullPen);
+    DeleteObject(hBorderPen);
+    SetBkMode(hdc, oldBkMode);
+    
+    LeaveCriticalSection(&g_fileListLock);
+}
+
 // 窗口过程函数
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
@@ -745,7 +1582,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             HandleCreateMessage(hwnd);
             break;
         }
-        
+
         case WM_SIZE: {
             HandleSizeMessage(hwnd, wParam, lParam);
             break;
@@ -759,7 +1596,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             ScreenToClient(hwnd, &pt);
             
             // 检查是否在分隔条区域
-            if (pt.x >= g_splitterPos && pt.x <= g_splitterPos + SPLITTER_WIDTH && pt.y > 50) {
+            if (pt.x >= g_splitterPos && pt.x <= g_splitterPos + SPLITTER_WIDTH && pt.y > 65) {
                 SetCursor(LoadCursor(NULL, IDC_SIZEWE));
                 return TRUE;
             }
@@ -770,8 +1607,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             int x = LOWORD(lParam);
             int y = HIWORD(lParam);
             
-            // 检查是否点击了分隔条 (在Y轴50像素以下)
-            if (x >= g_splitterPos && x <= g_splitterPos + SPLITTER_WIDTH && y > 50) {
+            // 检查是否点击了分隔条 (在Y轴65像素以下)
+            if (x >= g_splitterPos && x <= g_splitterPos + SPLITTER_WIDTH && y > 65) {
                 g_isDraggingSplitter = TRUE;
                 SetCapture(hwnd);
                 SetCursor(LoadCursor(NULL, IDC_SIZEWE));
@@ -812,14 +1649,111 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             }
             break;
         }
+
+        case WM_MOUSEWHEEL: {
+            if (wcscmp(g_currentPath, L"磁盘详情") == 0) {
+                int zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+                // 向下滚动时 zDelta < 0，应该增加 ScrollPos
+                int scrollAmount = -zDelta; 
+                
+                SCROLLINFO si = {0};
+                si.cbSize = sizeof(SCROLLINFO);
+                si.fMask = SIF_ALL;
+                GetScrollInfo(hwnd, SB_VERT, &si);
+                
+                int oldPos = si.nPos;
+                si.nPos += scrollAmount / 2; // 调整滚动速度
+                
+                // 边界检查
+                if (si.nPos < si.nMin) si.nPos = si.nMin;
+                if (si.nPos > si.nMax - (int)si.nPage) si.nPos = si.nMax - (int)si.nPage;
+                
+                if (si.nPos != oldPos) {
+                    g_diskScrollY = si.nPos;
+                    SetScrollInfo(hwnd, SB_VERT, &si, TRUE);
+                    InvalidateRect(hwnd, NULL, TRUE);
+                }
+            }
+            break;
+        }
+
+        case WM_VSCROLL: {
+            if (wcscmp(g_currentPath, L"磁盘详情") == 0) {
+                SCROLLINFO si = {0};
+                si.cbSize = sizeof(SCROLLINFO);
+                si.fMask = SIF_ALL;
+                GetScrollInfo(hwnd, SB_VERT, &si);
+                
+                int oldPos = si.nPos;
+                
+                switch (LOWORD(wParam)) {
+                    case SB_TOP: si.nPos = si.nMin; break;
+                    case SB_BOTTOM: si.nPos = si.nMax; break;
+                    case SB_LINEUP: si.nPos -= 20; break;
+                    case SB_LINEDOWN: si.nPos += 20; break;
+                    case SB_PAGEUP: si.nPos -= si.nPage; break;
+                    case SB_PAGEDOWN: si.nPos += si.nPage; break;
+                    case SB_THUMBTRACK: si.nPos = si.nTrackPos; break;
+                }
+                
+                // 边界检查
+                if (si.nPos < si.nMin) si.nPos = si.nMin;
+                if (si.nPos > si.nMax - (int)si.nPage) si.nPos = si.nMax - (int)si.nPage;
+                
+                if (si.nPos != oldPos) {
+                    g_diskScrollY = si.nPos;
+                    SetScrollInfo(hwnd, SB_VERT, &si, TRUE);
+                    InvalidateRect(hwnd, NULL, TRUE);
+                }
+            }
+            break;
+        }
         
         case WM_COMMAND: {
-            int wmId = LOWORD(wParam);
+        if (HandleContextMenuManagerMessage(hwnd, WM_COMMAND, wParam, lParam)) {
+            return 0;
+        }
+
+        int wmId = LOWORD(wParam);
             if (wmId == IDM_DEBUG) {
                 HandleDebugCommand(hwnd, wParam);
+            } else if (wmId == IDM_NEW_TAB) {
+                AddNewTab(L"");
+            } else if (wmId == IDM_CLOSE_TAB) {
+                CloseTab(g_currentTabIndex);
+            } else if (wmId == ID_BTN_NEW_TAB) {
+                AddNewTab(L"");
+            } else if (wmId == IDM_NEW_WINDOW) {
+                HandleNewWindow();
+            } else if (wmId == IDM_TILE_WINDOWS) {
+                HandleTileWindows();
+            } else if (wmId == IDM_NEW_DISK_DETAILS) {
+                AddNewTab(L"磁盘详情");
+            } else if (wmId == IDM_SET_DEFAULT) {
+                if (SetAsDefaultFileManager()) {
+                    MessageBoxW(hwnd, L"已成功设置为默认文件管理器！", L"成功", MB_OK | MB_ICONINFORMATION);
+                    // 更新菜单勾选状态
+                    HMENU hMenu = GetMenu(hwnd);
+                    HMENU hToolsMenu = GetSubMenu(hMenu, 0); // 假设工具菜单是第一个
+                    CheckMenuItem(hToolsMenu, IDM_SET_DEFAULT, MF_BYCOMMAND | MF_CHECKED);
+                } else {
+                    MessageBoxW(hwnd, L"设置失败，可能需要管理员权限或被安全软件拦截。", L"错误", MB_OK | MB_ICONERROR);
+                }
+            } else if (wmId == IDM_RESTORE_DEFAULT) {
+                if (RestoreDefaultFileManager()) {
+                    MessageBoxW(hwnd, L"已恢复系统默认设置。", L"成功", MB_OK | MB_ICONINFORMATION);
+                    // 更新菜单勾选状态
+                    HMENU hMenu = GetMenu(hwnd);
+                    HMENU hToolsMenu = GetSubMenu(hMenu, 0);
+                    CheckMenuItem(hToolsMenu, IDM_SET_DEFAULT, MF_BYCOMMAND | MF_UNCHECKED);
+                } else {
+                     MessageBoxW(hwnd, L"恢复失败，可能需要管理员权限。", L"错误", MB_OK | MB_ICONERROR);
+                 }
+             } else if (wmId == IDM_CONTEXT_MENU_MGR) {
+                AddNewTab(L"右键菜单管理");
             }
-            
-            if ((HWND)lParam == g_goButton) {
+             
+             if ((HWND)lParam == g_goButton) {
                 if (HIWORD(wParam) == BN_CLICKED) {
                     HandleGoButtonClick(hwnd);
                 }
@@ -837,30 +1771,128 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         }
         
         case WM_NOTIFY: {
+            if (HandleContextMenuManagerMessage(hwnd, WM_NOTIFY, wParam, lParam)) {
+                return 0;
+            }
+
+            LPNMHDR pnmh = (LPNMHDR)lParam;
+            if (g_tabCtrl && pnmh->hwndFrom == g_tabCtrl) {
+                if (pnmh->code == TCN_SELCHANGE) {
+                    int index = TabCtrl_GetCurSel(g_tabCtrl);
+                    SwitchToTab(index);
+                    return 0;
+                } else if (pnmh->code == NM_RCLICK) {
+                    POINT pt;
+                    GetCursorPos(&pt);
+                    
+                    // Hit test to see which tab
+                    POINT clientPt = pt;
+                    ScreenToClient(g_tabCtrl, &clientPt);
+                    TCHITTESTINFO hti;
+                    hti.pt = clientPt;
+                    int tab = TabCtrl_HitTest(g_tabCtrl, &hti);
+                    
+                    HMENU hMenu = CreatePopupMenu();
+                    AppendMenuW(hMenu, MF_STRING, IDM_NEW_TAB, L"新建标签页");
+                    
+                    if (tab != -1) {
+                          // Right clicked on a tab
+                          SwitchToTab(tab); 
+                          AppendMenuW(hMenu, MF_STRING, IDM_CLOSE_TAB, L"关闭标签页");
+                     }
+                    
+                    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
+                    DestroyMenu(hMenu);
+                    return 0;
+                }
+            }
+            
+            if (pnmh->hwndFrom == g_listView && pnmh->code == LVN_BEGINDRAG) {
+                std::vector<std::wstring> draggedFiles;
+                
+                // Get selected items
+                int iItem = -1;
+                while ((iItem = ListView_GetNextItem(g_listView, iItem, LVNI_SELECTED)) != -1) {
+                    EnterCriticalSection(&g_fileListLock);
+                    if (iItem < (int)g_fileList.size()) {
+                        std::wstring fullPath = g_currentPath;
+                        if (fullPath.back() != L'\\') fullPath += L"\\";
+                        fullPath += g_fileList[iItem].name;
+                        draggedFiles.push_back(fullPath);
+                    }
+                    LeaveCriticalSection(&g_fileListLock);
+                }
+                
+                if (!draggedFiles.empty()) {
+                    CDataObject* pDataObject = new CDataObject(draggedFiles);
+                    CDropSource* pDropSource = new CDropSource();
+                    
+                    DWORD dwEffect;
+                    DoDragDrop(pDataObject, pDropSource, DROPEFFECT_COPY | DROPEFFECT_MOVE, &dwEffect);
+                    
+                    pDataObject->Release();
+                    pDropSource->Release();
+                    
+                    // Note: If move operation occurred, updateFileList is needed.
+                    // Even if copy, refreshing is safe.
+                    // But if we moved to ourselves, we already refreshed in PerformFileOperation.
+                    // If we moved to Explorer, Explorer handled it. We should check if files are gone?
+                    // Simple approach: Always refresh.
+                    updateFileList();
+                }
+                return 0;
+            }
+
             // 处理通知消息
             return HandleNotificationMessages(hwnd, wParam, lParam);
         }
         break;
+
+        case WM_DROPFILES: {
+            HDROP hDrop = (HDROP)wParam;
+            WCHAR dragPath[MAX_PATH];
+            int count = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+            std::vector<std::wstring> files;
+            for (int i=0; i<count; i++) {
+                if (DragQueryFileW(hDrop, i, dragPath, MAX_PATH)) {
+                    files.push_back(dragPath);
+                }
+            }
+            DragFinish(hDrop);
+            BOOL isMove = (GetKeyState(VK_SHIFT) < 0);
+            PerformFileOperation(files, g_currentPath, isMove);
+            return 0;
+        }
+
         
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
             
-            // 绘制分隔线
             RECT rect;
             GetClientRect(hwnd, &rect);
             
-            // 创建灰色画笔
-            HPEN hPen = CreatePen(PS_SOLID, 1, RGB(200, 200, 200));
-            HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
-            
-            // 绘制线条
-            int x = g_splitterPos + SPLITTER_WIDTH / 2;
-            MoveToEx(hdc, x, 50, NULL);
-            LineTo(hdc, x, rect.bottom);
-            
-            SelectObject(hdc, hOldPen);
-            DeleteObject(hPen);
+            if (wcscmp(g_currentPath, L"磁盘详情") != 0) {
+                // 确保隐藏垂直滚动条
+                ShowScrollBar(hwnd, SB_VERT, FALSE);
+
+                // 绘制分隔线
+                HPEN hPen = CreatePen(PS_SOLID, 1, RGB(200, 200, 200));
+                HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+                
+                int x = g_splitterPos + SPLITTER_WIDTH / 2;
+                MoveToEx(hdc, x, 65, NULL);
+                LineTo(hdc, x, rect.bottom);
+                
+                SelectObject(hdc, hOldPen);
+                DeleteObject(hPen);
+            } else {
+                // 磁盘详情页绘制饼图
+                // 使用完整的客户区，但要注意避开顶部的工具栏/地址栏 (假设 65px 高)
+                RECT pieRect = rect;
+                pieRect.top = 65; 
+                DrawDiskPieChart(hdc, pieRect);
+            }
             
             EndPaint(hwnd, &ps);
             return 0;
@@ -978,6 +2010,9 @@ void HandleFavoriteCommands(WPARAM wParam) {
 
 // 处理ListView的双击消息
 void HandleListViewDoubleClick(HWND hwnd, LPARAM lParam) {
+    // 如果在磁盘详情页，禁止导航
+    if (wcscmp(g_currentPath, L"磁盘详情") == 0) return;
+
     LPNMITEMACTIVATE lpnmitem = (LPNMITEMACTIVATE)lParam;
     if (lpnmitem->iItem != -1) {
         // 获取选中项的文本
@@ -997,22 +2032,33 @@ void HandleListViewDoubleClick(HWND hwnd, LPARAM lParam) {
         item.cchTextMax = 32;
         SendMessageW(g_listView, LVM_GETITEMW, 0, (LPARAM)&item);
         
-        if (wcscmp(itemType, L"文件夹") == 0) {
+        if (wcscmp(itemType, L"文件夹") == 0 || wcscmp(itemType, L"本地磁盘") == 0) {
             // 导航到子目录
             WCHAR newPath[MAX_PATH] = {0};
-            lstrcpyW(newPath, g_currentPath);
-            if (newPath[lstrlenW(newPath) - 1] != L'\\') {
-                lstrcatW(newPath, L"\\");
+            if (wcscmp(itemType, L"本地磁盘") == 0) {
+                // 如果是驱动器，直接使用名称部分（如 "C:"）
+                // Item name is "C: (Label)" or just "C:"
+                // We need to extract "C:"
+                 WCHAR* spacePos = wcschr(itemName, L' ');
+                 if (spacePos) {
+                     wcsncpy_s(newPath, MAX_PATH, itemName, spacePos - itemName);
+                 } else {
+                     lstrcpyW(newPath, itemName);
+                 }
+                 lstrcatW(newPath, L"\\");
+            } else {
+                lstrcpyW(newPath, g_currentPath);
+                if (newPath[lstrlenW(newPath) - 1] != L'\\') {
+                    lstrcatW(newPath, L"\\");
+                }
+                lstrcatW(newPath, itemName);
             }
-            lstrcatW(newPath, itemName);
             
             // 检查路径是否存在且为目录
             DWORD attributes = GetFileAttributesW(newPath);
             if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
                 setCurrentDirectory(newPath);
                 updateFileList();
-                // 更新目录树
-                syncTreeViewWithPath(newPath);
             } else {
                 MessageBoxW(hwnd, L"无效的目录路径", L"错误", MB_OK | MB_ICONERROR);
             }
@@ -1105,7 +2151,26 @@ HWND CreateMainWindow(HINSTANCE hInstance) {
         // 创建菜单
         HMENU hMenu = CreateMenu();
         HMENU hHelpMenu = CreatePopupMenu();
+        HMENU hToolsMenu = CreatePopupMenu();
+        
+        AppendMenuW(hToolsMenu, MF_STRING, IDM_NEW_WINDOW, L"新窗口");
+        AppendMenuW(hToolsMenu, MF_STRING, IDM_TILE_WINDOWS, L"左右平铺窗口");
+        AppendMenuW(hToolsMenu, MF_STRING, IDM_NEW_DISK_DETAILS, L"新建磁盘详情页");
+        AppendMenuW(hToolsMenu, MF_SEPARATOR, 0, NULL);
+        
+        // 检查是否已设置为默认，如果是，则勾选
+        UINT flags = MF_STRING;
+        if (IsDefaultFileManager()) {
+            flags |= MF_CHECKED;
+        }
+        AppendMenuW(hToolsMenu, flags, IDM_SET_DEFAULT, L"设为默认文件管理器");
+        AppendMenuW(hToolsMenu, MF_STRING, IDM_RESTORE_DEFAULT, L"恢复系统默认");
+        AppendMenuW(hToolsMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(hToolsMenu, MF_STRING, IDM_CONTEXT_MENU_MGR, L"右键菜单管理");
+        
         AppendMenuW(hHelpMenu, MF_STRING, IDM_DEBUG, L"Debug");
+        
+        AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hToolsMenu, L"工具");
         AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hHelpMenu, L"Help");
         SetMenu(hwnd, hMenu);
 
@@ -1114,6 +2179,8 @@ HWND CreateMainWindow(HINSTANCE hInstance) {
         GetWindowTextW(hwnd, windowTitle, 256);
         LogMessage(L"窗口标题: %s", windowTitle);
         
+        DragAcceptFiles(hwnd, TRUE); // Enable Drop Files
+
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
         
@@ -1333,9 +2400,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     LogMessage(L"资源管理器程序启动中...");
     
     
-    // 初始化COM
-    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    LogMessage(L"COM初始化完成");
+    // 初始化COM (使用OleInitialize以支持拖放)
+    if (FAILED(OleInitialize(NULL))) {
+        LogMessage(L"OLE初始化失败");
+        return 1;
+    }
+    LogMessage(L"OLE初始化完成");
     
     // 注册窗口类
     if (!RegisterWindowClass(hInstance)) {
@@ -1346,7 +2416,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     LogMessage(L"窗口类注册成功");
     
     // 获取当前目录
-    getCurrentDirectory(g_currentPath, MAX_PATH);
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(pCmdLine, &argc);
+    if (argv && argc > 0) {
+        // Remove quotes if present is handled by CommandLineToArgvW
+        // But argv[0] is the first argument, not program name in this case?
+        // wWinMain pCmdLine contains only arguments.
+        // CommandLineToArgvW parses a string. If pCmdLine is "C:\", argv[0] is C:\
+        
+        lstrcpyW(g_currentPath, argv[0]);
+        LocalFree(argv);
+    } else {
+        lstrcpyW(g_currentPath, L"此电脑");
+    }
     LogMessage(L"当前目录: %s", g_currentPath);
     
     // 创建主窗口
@@ -1383,6 +2465,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     updateFileList();
     LogMessage(L"文件列表加载完成");
     
+    // 如果有初始路径，同步目录树选中状态
+    if (wcslen(g_currentPath) > 0 && wcscmp(g_currentPath, L"此电脑") != 0 && wcscmp(g_currentPath, L"磁盘详情") != 0) {
+        LogMessage(L"同步初始路径到目录树: %s", g_currentPath);
+        syncTreeViewWithPath(g_currentPath);
+    }
+    
     LogMessage(L"资源管理器程序启动完成，进入消息循环");
     
     // 消息循环
@@ -1395,7 +2483,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     LogMessage(L"资源管理器程序退出");
     
     // 清理COM
-    CoUninitialize();
+    OleUninitialize();
     
     return 0;
 }

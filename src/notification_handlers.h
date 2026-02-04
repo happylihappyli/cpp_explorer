@@ -6,6 +6,7 @@
 
 // 前向声明
 LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam);
+void updateDiskUsageRatio(const WCHAR* path);
 
 struct ItemSortData {
     std::wstring name;
@@ -14,6 +15,8 @@ struct ItemSortData {
     FILETIME created;
     FILETIME modified;
     BOOL isPartial;
+    ULONGLONG freeSpace; // For drives
+    ULONGLONG totalSpace; // For drives
 };
 
 #endif // NOTIFICATION_HANDLERS_H

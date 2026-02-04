@@ -343,3 +343,34 @@ bool DeleteToRecycleBin(const WCHAR* path) {
     int result = SHFileOperationW(&fileOp);
     return (result == 0) && !fileOp.fAnyOperationsAborted;
 }
+
+// 获取所有驱动器信息
+int getDriveList(DriveInfo* drives, int maxDrives) {
+    WCHAR buffer[MAX_PATH];
+    if (GetLogicalDriveStringsW(MAX_PATH, buffer) == 0) return 0;
+
+    int count = 0;
+    WCHAR* p = buffer;
+    while (*p && count < maxDrives) {
+        lstrcpyW(drives[count].letter, p);
+        
+        // Get Volume Information
+        WCHAR volName[MAX_PATH] = {0};
+        GetVolumeInformationW(p, volName, MAX_PATH, NULL, NULL, NULL, NULL, 0);
+        lstrcpyW(drives[count].volName, volName);
+
+        // Get Disk Space
+        ULARGE_INTEGER freeBytesAvailable, totalNumberOfBytes, totalNumberOfFreeBytes;
+        if (GetDiskFreeSpaceExW(p, &freeBytesAvailable, &totalNumberOfBytes, &totalNumberOfFreeBytes)) {
+            drives[count].totalBytes = totalNumberOfBytes;
+            drives[count].freeBytes = totalNumberOfFreeBytes;
+        } else {
+            drives[count].totalBytes.QuadPart = 0;
+            drives[count].freeBytes.QuadPart = 0;
+        }
+
+        count++;
+        p += lstrlenW(p) + 1;
+    }
+    return count;
+}

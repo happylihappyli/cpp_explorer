@@ -27,6 +27,7 @@ extern HTREEITEM g_favoritesNode;
 extern WCHAR g_currentPath[MAX_PATH];
 extern BOOL g_timerActive;
 extern BOOL g_sorting;
+extern BOOL g_isNavigatingFromTree;
 extern BOOL HasPendingItems();
 extern std::vector<ItemSortData> g_fileList;
 extern CRITICAL_SECTION g_fileListLock;
@@ -43,19 +44,21 @@ void loadFavoritesIntoTree();
 // 更新磁盘占用比例
 void updateDiskUsageRatio(const WCHAR* path) {
     WCHAR rootPath[MAX_PATH] = {0};
-    if (path[0] && path[1] == L':') {
+    if (path && path[0] && path[1] == L':') {
         // 提取驱动器根路径（如 C:\）
         rootPath[0] = path[0];
         rootPath[1] = L':';
         rootPath[2] = L'\\';
         rootPath[3] = L'\0';
-    } else {
+    } else if (g_currentPath[0] && g_currentPath[1] == L':') {
         // 获取当前驱动器根路径
-        GetDriveTypeW(L"C:\\");
         rootPath[0] = g_currentPath[0];
         rootPath[1] = L':';
         rootPath[2] = L'\\';
         rootPath[3] = L'\0';
+    } else {
+        g_diskUsageRatio = 0.0;
+        return;
     }
 
     ULARGE_INTEGER freeBytesAvailable = {0};
@@ -67,6 +70,8 @@ void updateDiskUsageRatio(const WCHAR* path) {
             g_diskUsageRatio = 1.0 - ((double)totalFreeBytes.QuadPart / (double)totalBytes.QuadPart);
             LogMessage(L"磁盘占用比例更新: %.1f%% (驱动器: %s)", g_diskUsageRatio * 100.0, rootPath);
         }
+    } else {
+        g_diskUsageRatio = 0.0;
     }
 }
 
@@ -461,7 +466,9 @@ LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam) {
                 if (isFavoriteItem && pFavoriteItem != NULL) {
                     // 这是一个收藏夹项，直接跳转到对应的路径
                     LogMessage(L"[DEBUG] 选中收藏夹项: %s -> %s", pFavoriteItem->name, pFavoriteItem->path);
+                    g_isNavigatingFromTree = TRUE;
                     setCurrentDirectory(pFavoriteItem->path);
+                    g_isNavigatingFromTree = FALSE;
                     updateFileList();
                     
                     // 更新磁盘占用比例
@@ -485,7 +492,9 @@ LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam) {
                     
                     // 确保不是在构建包含"★ 收藏夹"的无效路径
                     if (wcsstr(fullPath, L"★ 收藏夹") == NULL) {
+                        g_isNavigatingFromTree = TRUE;
                         setCurrentDirectory(fullPath);
+                        g_isNavigatingFromTree = FALSE;
                         updateFileList();
                         
                         // 更新磁盘占用比例
@@ -529,6 +538,80 @@ LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam) {
             break;
         }
         
+        case NM_CUSTOMDRAW: {
+            NMLVCUSTOMDRAW* pCustomDraw = (NMLVCUSTOMDRAW*)lParam;
+            if (pCustomDraw->nmcd.hdr.hwndFrom == g_listView) {
+                if (g_currentPath[0] == L'\0' || wcscmp(g_currentPath, L"此电脑") == 0 || wcscmp(g_currentPath, L"磁盘详情") == 0) {
+                     switch (pCustomDraw->nmcd.dwDrawStage) {
+                        case CDDS_PREPAINT:
+                            return CDRF_NOTIFYITEMDRAW;
+                        case CDDS_ITEMPREPAINT:
+                            return CDRF_NOTIFYSUBITEMDRAW;
+                        case CDDS_SUBITEM | CDDS_ITEMPREPAINT:
+                            if (pCustomDraw->iSubItem == 2) { // Usage Column
+                                int index = (int)pCustomDraw->nmcd.dwItemSpec;
+                                EnterCriticalSection(&g_fileListLock);
+                                if (index >= 0 && index < (int)g_fileList.size()) {
+                                    const ItemSortData& data = g_fileList[index];
+                                    if (data.totalSpace > 0) {
+                                        double ratio = 1.0 - (double)data.freeSpace / (double)data.totalSpace;
+                                        if (ratio < 0) ratio = 0;
+                                        if (ratio > 1) ratio = 1;
+                                        
+                                        HDC hdc = pCustomDraw->nmcd.hdc;
+                                        RECT rc = pCustomDraw->nmcd.rc;
+                                        RECT rcText = rc; // Save for text drawing
+
+                                        // Adjust rect for padding for the bar
+                                        rc.left += 4; rc.top += 2; rc.right -= 4; rc.bottom -= 2;
+                                        
+                                        // Draw Border
+                                        FrameRect(hdc, &rc, (HBRUSH)GetStockObject(GRAY_BRUSH));
+                                        
+                                        // Draw Fill
+                                        InflateRect(&rc, -1, -1);
+                                        int width = rc.right - rc.left;
+                                        if (width < 0) width = 0;
+                                        
+                                        int fillWidth = (int)(width * ratio);
+                                        RECT rcFill = rc;
+                                        rcFill.right = rcFill.left + fillWidth;
+                                        
+                                        // Choose Color
+                                        COLORREF barColor;
+                                        if (ratio < 0.75) barColor = RGB(0, 120, 215); // Blue
+                                        else if (ratio < 0.9) barColor = RGB(255, 165, 0); // Orange
+                                        else barColor = RGB(220, 0, 0); // Red
+                                        
+                                        HBRUSH hBrush = CreateSolidBrush(barColor);
+                                        FillRect(hdc, &rcFill, hBrush);
+                                        DeleteObject(hBrush);
+                                        
+                                        // Draw Text (Percentage)
+                                        WCHAR text[64];
+                                        swprintf_s(text, 64, L"%.1f%%", ratio * 100.0);
+                                        SetBkMode(hdc, TRANSPARENT);
+                                        
+                                        // Text shadow for better visibility
+                                        rcText.left += 1; rcText.top += 1;
+                                        SetTextColor(hdc, RGB(200, 200, 200)); // Light shadow
+                                        DrawTextW(hdc, text, -1, &rcText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                                        
+                                        rcText.left -= 1; rcText.top -= 1;
+                                        SetTextColor(hdc, RGB(0, 0, 0)); // Black text
+                                        DrawTextW(hdc, text, -1, &rcText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                                    }
+                                }
+                                LeaveCriticalSection(&g_fileListLock);
+                                return CDRF_SKIPDEFAULT;
+                            }
+                            return CDRF_DODEFAULT;
+                     }
+                }
+            }
+            break;
+        }
+
         case LVN_COLUMNCLICK: {
             if (nmhdr->hwndFrom == g_listView) {
                 if (g_sorting) return 0;
@@ -540,6 +623,17 @@ LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam) {
                 g_sorting = TRUE;
                 SortParam* sp = new SortParam{ p->iSubItem, asc };
                 CreateThread(NULL, 0, SortWorker, sp, 0, NULL);
+            }
+            break;
+        }
+
+        case LVN_ITEMCHANGED: {
+            LPNMLISTVIEW pnmv = (LPNMLISTVIEW)lParam;
+            if ((pnmv->uChanged & LVIF_STATE) && (pnmv->uNewState & LVIS_SELECTED)) {
+                // 如果在磁盘详情页，选中项改变时重绘主窗口以更新饼图
+                if (wcscmp(g_currentPath, L"磁盘详情") == 0) {
+                    InvalidateRect(g_mainWindow, NULL, TRUE);
+                }
             }
             break;
         }
@@ -562,20 +656,32 @@ LRESULT HandleNotificationMessages(HWND hwnd, WPARAM wParam, LPARAM lParam) {
                             case 1: // Size
                                 {
                                     WCHAR buf[64];
-                                    formatFileSize(data.sizeNumeric, buf, 64);
-                                    if (data.isPartial) {
-                                        lstrcatW(buf, L"+");
+                                    if (g_currentPath[0] == L'\0' || wcscmp(g_currentPath, L"此电脑") == 0 || wcscmp(g_currentPath, L"磁盘详情") == 0) {
+                                         // Drive View: Show Total Space
+                                         formatFileSize(data.totalSpace, buf, 64);
+                                    } else {
+                                         formatFileSize(data.sizeNumeric, buf, 64);
+                                         if (data.isPartial) lstrcatW(buf, L"+");
                                     }
                                     wcsncpy_s(item.pszText, item.cchTextMax, buf, _TRUNCATE);
                                 }
                                 break;
                             case 2: // Type
-                                wcsncpy_s(item.pszText, item.cchTextMax, data.isDir ? L"文件夹" : L"文件", _TRUNCATE);
+                                if (g_currentPath[0] == L'\0' || wcscmp(g_currentPath, L"此电脑") == 0 || wcscmp(g_currentPath, L"磁盘详情") == 0) {
+                                    wcsncpy_s(item.pszText, item.cchTextMax, L"本地磁盘", _TRUNCATE);
+                                } else {
+                                    wcsncpy_s(item.pszText, item.cchTextMax, data.isDir ? L"文件夹" : L"文件", _TRUNCATE);
+                                }
                                 break;
                             case 3: // Modified
                                 {
                                     WCHAR buf[64];
-                                    formatFileTime(&data.modified, buf, 64);
+                                    if (g_currentPath[0] == L'\0' || wcscmp(g_currentPath, L"此电脑") == 0 || wcscmp(g_currentPath, L"磁盘详情") == 0) {
+                                         // Drive View: Show Free Space
+                                         formatFileSize(data.freeSpace, buf, 64);
+                                    } else {
+                                        formatFileTime(&data.modified, buf, 64);
+                                    }
                                     wcsncpy_s(item.pszText, item.cchTextMax, buf, _TRUNCATE);
                                 }
                                 break;

@@ -31,6 +31,16 @@ BOOL getCachedDirSize(const WCHAR* path, ULONGLONG* sizeOut);
 // 写入本地缓存目录大小
 void setCachedDirSize(const WCHAR* path, ULONGLONG size);
 
+struct DriveInfo {
+    WCHAR letter[4];
+    WCHAR volName[MAX_PATH];
+    ULARGE_INTEGER totalBytes;
+    ULARGE_INTEGER freeBytes;
+};
+
+// 获取所有驱动器信息
+int getDriveList(DriveInfo* drives, int maxDrives);
+
 // 删除文件或目录到回收站
 bool DeleteToRecycleBin(const WCHAR* path);
 
