@@ -16,6 +16,7 @@
 #include "settings.h"
 #include "registry_integration.h"
 #include "context_menu_manager.h"
+#include "language.h"
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -247,6 +248,7 @@ HWND g_upButton = NULL;
 HWND g_newTabButton = NULL;
 HWND g_openInExplorerButton = NULL;
 HWND g_settingsButton = NULL;
+HWND g_collapseDrivesButton = NULL;  // 折叠所有驱动器按钮
 HWND g_addFavoriteButton = NULL;  // 添加收藏按钮
 HWND g_statusBar = NULL;  // 底部状态栏
 double g_diskUsageRatio = 0.0;  // 磁盘占用比例 (0.0 - 1.0)
@@ -899,33 +901,33 @@ void HandleCreateMessage(HWND hwnd) {
 
     // 创建后退按钮
     g_backButton = CreateWindowExW(
-        0, L"BUTTON", L"←",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        10, 10, 40, 25,
+        0, L"BUTTON", getText(TEXT_BTN_BACK),
+        WS_CHILD | WS_VISIBLE | BS_FLAT,
+        10, 10, 150, 36,
         hwnd, NULL, NULL, NULL
     );
     
     // 创建前进按钮
     g_forwardButton = CreateWindowExW(
-        0, L"BUTTON", L"→",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        55, 10, 40, 25,
+        0, L"BUTTON", getText(TEXT_BTN_FORWARD),
+        WS_CHILD | WS_VISIBLE | BS_FLAT,
+        165, 10, 150, 36,
         hwnd, NULL, NULL, NULL
     );
 
     // 创建向上按钮
     g_upButton = CreateWindowExW(
-        0, L"BUTTON", L"↑",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        100, 10, 40, 25,
+        0, L"BUTTON", getText(TEXT_BTN_UP),
+        WS_CHILD | WS_VISIBLE | BS_FLAT,
+        320, 10, 150, 36,
         hwnd, NULL, NULL, NULL
     );
 
     // 创建新建标签页按钮
     g_newTabButton = CreateWindowExW(
-        0, L"BUTTON", L"+",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        145, 10, 25, 25,
+        0, L"BUTTON", getText(TEXT_BTN_NEW_TAB),
+        WS_CHILD | WS_VISIBLE | BS_FLAT,
+        475, 10, 150, 36,
         hwnd, (HMENU)ID_BTN_NEW_TAB, NULL, NULL
     );
 
@@ -933,7 +935,7 @@ void HandleCreateMessage(HWND hwnd) {
     g_addressBar = CreateWindowExW(
         0, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-        175, 10, 425, 25,
+        630, 10, 550, 36,
         hwnd, NULL, NULL, NULL
     );
     
@@ -944,29 +946,35 @@ void HandleCreateMessage(HWND hwnd) {
     
     // 创建前往按钮
     g_goButton = CreateWindowExW(
-        0, L"BUTTON", L"前往",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        610, 10, 60, 25,
+        0, L"BUTTON", getText(TEXT_BTN_GO),
+        WS_CHILD | WS_VISIBLE | BS_FLAT,
+        1185, 10, 150, 36,
         hwnd, NULL, NULL, NULL
     );
 
     // 创建Open Explorer按钮
     g_openInExplorerButton = CreateWindowExW(
-        0, L"BUTTON", L"打开",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        680, 10, 60, 25,
+        0, L"BUTTON", getText(TEXT_BTN_OPEN),
+        WS_CHILD | WS_VISIBLE | BS_FLAT,
+        1340, 10, 150, 36,
         hwnd, NULL, NULL, NULL
     );
 
     // 创建设置按钮
     g_settingsButton = CreateWindowExW(
-        0, L"BUTTON", L"设置",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        750, 10, 60, 25,
+        0, L"BUTTON", getText(TEXT_BTN_SETTINGS),
+        WS_CHILD | WS_VISIBLE | BS_FLAT,
+        1495, 10, 150, 36,
         hwnd, NULL, NULL, NULL
     );
     
-    // 不再创建添加收藏按钮，改用右键菜单方式
+    // 创建折叠所有驱动器按钮（放在最后）
+    g_collapseDrivesButton = CreateWindowExW(
+        0, L"BUTTON", getText(TEXT_BTN_COLLAPSE_DRIVES),
+        WS_CHILD | WS_VISIBLE | BS_FLAT,
+        1650, 10, 150, 36,
+        hwnd, NULL, NULL, NULL
+    );
     
     // 创建TreeView (左侧目录树)
     g_treeView = CreateWindowExW(
@@ -1115,23 +1123,30 @@ void HandleSizeMessage(HWND hwnd, WPARAM wParam, LPARAM lParam) {
     int topOffset = 30; // Tab高度(25) + 间距(5)
 
     // 调整控件大小
-    if (g_backButton) MoveWindow(g_backButton, 10, topOffset, 40, 25, TRUE);
-    if (g_forwardButton) MoveWindow(g_forwardButton, 55, topOffset, 40, 25, TRUE);
-    if (g_upButton) MoveWindow(g_upButton, 100, topOffset, 40, 25, TRUE);
-    if (g_newTabButton) MoveWindow(g_newTabButton, 145, topOffset, 25, 25, TRUE);
-    
-    int settingsBtnX = clientWidth - 70;
-    int openBtnX = clientWidth - 135;
-    int goBtnX = clientWidth - 200;
+    int btnHeight = 25;
+    int btnWidth = 80; // 增加宽度以显示完整文字
+    int gap = 5;
+    int currentX = 10;
 
-    if (g_goButton) MoveWindow(g_goButton, goBtnX, topOffset, 60, 25, TRUE);
-    if (g_openInExplorerButton) MoveWindow(g_openInExplorerButton, openBtnX, topOffset, 60, 25, TRUE);
-    if (g_settingsButton) MoveWindow(g_settingsButton, settingsBtnX, topOffset, 60, 25, TRUE);
+    if (g_collapseDrivesButton) { MoveWindow(g_collapseDrivesButton, currentX, topOffset, btnWidth, btnHeight, TRUE); currentX += btnWidth + gap; }
+    if (g_backButton) { MoveWindow(g_backButton, currentX, topOffset, btnWidth, btnHeight, TRUE); currentX += btnWidth + gap; }
+    if (g_forwardButton) { MoveWindow(g_forwardButton, currentX, topOffset, btnWidth, btnHeight, TRUE); currentX += btnWidth + gap; }
+    if (g_upButton) { MoveWindow(g_upButton, currentX, topOffset, btnWidth, btnHeight, TRUE); currentX += btnWidth + gap; }
+    if (g_newTabButton) { MoveWindow(g_newTabButton, currentX, topOffset, btnWidth, btnHeight, TRUE); currentX += btnWidth + gap; }
+    
+    // 右侧按钮布局
+    int settingsBtnX = clientWidth - btnWidth - 10;
+    int openBtnX = settingsBtnX - btnWidth - gap;
+    int goBtnX = openBtnX - btnWidth - gap;
+
+    if (g_goButton) MoveWindow(g_goButton, goBtnX, topOffset, btnWidth, btnHeight, TRUE);
+    if (g_openInExplorerButton) MoveWindow(g_openInExplorerButton, openBtnX, topOffset, btnWidth, btnHeight, TRUE);
+    if (g_settingsButton) MoveWindow(g_settingsButton, settingsBtnX, topOffset, btnWidth, btnHeight, TRUE);
 
     if (g_addressBar) {
-        int addrWidth = goBtnX - 175 - 10;
+        int addrWidth = goBtnX - currentX - gap;
         if (addrWidth < 0) addrWidth = 0;
-        MoveWindow(g_addressBar, 175, topOffset, addrWidth, 25, TRUE);
+        MoveWindow(g_addressBar, currentX, topOffset, addrWidth, btnHeight, TRUE);
     }
     
     // 确保分隔条位置在合理范围内
@@ -1763,6 +1778,27 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 ShellExecuteW(NULL, L"explore", g_currentPath, NULL, NULL, SW_SHOWNORMAL);
             } else if ((HWND)lParam == g_settingsButton && HIWORD(wParam) == BN_CLICKED) {
                 ShowSettingsDialog(hwnd);
+            } else if ((HWND)lParam == g_collapseDrivesButton && HIWORD(wParam) == BN_CLICKED) {
+                // 折叠所有驱动器节点
+                if (g_treeView) {
+                    HTREEITEM hRoot = TreeView_GetRoot(g_treeView);
+                    while (hRoot) {
+                        // 只折叠驱动器节点（收藏夹节点除外）
+                        TVITEMW tvItem = {0};
+                        WCHAR itemText[MAX_PATH] = {0};
+                        tvItem.hItem = hRoot;
+                        tvItem.mask = TVIF_TEXT | TVIF_PARAM;
+                        tvItem.pszText = itemText;
+                        tvItem.cchTextMax = MAX_PATH;
+                        if (TreeView_GetItem(g_treeView, &tvItem)) {
+                            // 检查是否为收藏夹节点
+                            if (tvItem.lParam != FAVORITE_ITEM_MARKER) {
+                                TreeView_Expand(g_treeView, hRoot, TVE_COLLAPSE);
+                            }
+                        }
+                        hRoot = TreeView_GetNextSibling(g_treeView, hRoot);
+                    }
+                }
             } else if (LOWORD(wParam) == 1 || LOWORD(wParam) == 2 || LOWORD(wParam) == 3) {
                 LogMessage(L"[DEBUG] WM_COMMAND 收到收藏夹命令: %d", LOWORD(wParam));
                 HandleFavoriteCommands(wParam);
@@ -1840,6 +1876,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                     // Simple approach: Always refresh.
                     updateFileList();
                 }
+                return 0;
+            }
+            
+            if (pnmh->hwndFrom == g_listView && pnmh->code == NM_RCLICK) {
+                POINT pt;
+                GetCursorPos(&pt);
+                
+                HMENU hPopupMenu = CreatePopupMenu();
+                AppendMenuW(hPopupMenu, MF_STRING, 2, L"添加当前目录到收藏夹");
+                
+                TrackPopupMenu(hPopupMenu, TPM_LEFTALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
+                DestroyMenu(hPopupMenu);
                 return 0;
             }
 
@@ -2133,8 +2181,8 @@ BOOL RegisterWindowClass(HINSTANCE hInstance) {
 HWND CreateMainWindow(HINSTANCE hInstance) {
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-    int windowWidth = 1024;
-    int windowHeight = 768;
+    int windowWidth = 1900;
+    int windowHeight = 900;
     int x = (screenWidth - windowWidth) / 2;
     int y = (screenHeight - windowHeight) / 2;
 
@@ -2393,6 +2441,9 @@ void HideCustomTooltip() {
 
 // WinMain入口点
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
+    // 初始化语言系统
+    initLanguageSystem();
+    
     // 加载设置
     loadSettings();
 

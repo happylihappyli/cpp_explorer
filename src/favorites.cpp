@@ -40,16 +40,102 @@ void addCurrentPathToFavorites() {
         return;
     }
     
-    // 获取当前目录名称
-    WCHAR dirName[MAX_PATH];
+    // 获取当前目录名称作为默认名称
+    WCHAR defaultName[MAX_PATH];
     const WCHAR* lastSlash = wcsrchr(g_currentPath, L'\\');
     if (lastSlash && *(lastSlash + 1) != L'\0') {
-        wcscpy_s(dirName, MAX_PATH, lastSlash + 1);
+        wcscpy_s(defaultName, MAX_PATH, lastSlash + 1);
     } else {
-        wcscpy_s(dirName, MAX_PATH, g_currentPath);
+        wcscpy_s(defaultName, MAX_PATH, g_currentPath);
     }
     
-    LogMessage(L"[FAVORITES] 尝试添加收藏夹项: %s (%s)", dirName, g_currentPath);
+    // 弹出输入对话框让用户输入收藏名称
+    WCHAR favoriteName[MAX_PATH];
+    wcscpy_s(favoriteName, MAX_PATH, defaultName);
+    
+    // 创建输入对话框
+    HWND hInputDlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        L"STATIC", L"",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+        0, 0, 300, 150,
+        g_mainWindow, NULL, GetModuleHandle(NULL), NULL
+    );
+    
+    if (!hInputDlg) {
+        LogMessage(L"[FAVORITES] [ERROR] 无法创建输入对话框");
+        ShowCustomTooltip(g_mainWindow, L"无法创建输入对话框！");
+        return;
+    }
+    
+    // 居中显示对话框
+    RECT rcParent, rcDlg;
+    GetWindowRect(g_mainWindow, &rcParent);
+    GetWindowRect(hInputDlg, &rcDlg);
+    int x = rcParent.left + (rcParent.right - rcParent.left - (rcDlg.right - rcDlg.left)) / 2;
+    int y = rcParent.top + (rcParent.bottom - rcParent.top - (rcDlg.bottom - rcDlg.top)) / 2;
+    SetWindowPos(hInputDlg, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    
+    // 创建提示文本
+    CreateWindowW(L"STATIC", L"请输入收藏名称:", WS_CHILD | WS_VISIBLE, 10, 10, 280, 20, hInputDlg, NULL, NULL, NULL);
+    
+    // 创建输入框
+    HWND hEdit = CreateWindowW(L"EDIT", favoriteName, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 10, 35, 280, 25, hInputDlg, (HMENU)1, NULL, NULL);
+    SendMessage(hEdit, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+    SetFocus(hEdit);
+    
+    // 创建确定按钮
+    HWND hOKBtn = CreateWindowW(L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 50, 80, 80, 30, hInputDlg, (HMENU)IDOK, NULL, NULL);
+    SendMessage(hOKBtn, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+    
+    // 创建取消按钮
+    HWND hCancelBtn = CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 170, 80, 80, 30, hInputDlg, (HMENU)IDCANCEL, NULL, NULL);
+    SendMessage(hCancelBtn, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+    
+    // 设置对话框标题
+    SetWindowTextW(hInputDlg, L"添加到收藏夹");
+    
+    // 显示对话框
+    ShowWindow(hInputDlg, SW_SHOW);
+    UpdateWindow(hInputDlg);
+    EnableWindow(g_mainWindow, FALSE);
+    
+    // 消息循环
+    MSG msg;
+    BOOL result = FALSE;
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        if (msg.message == WM_COMMAND) {
+            if (msg.hwnd == hOKBtn) {
+                GetWindowTextW(hEdit, favoriteName, MAX_PATH);
+                if (wcslen(favoriteName) == 0) {
+                    MessageBoxW(hInputDlg, L"收藏名称不能为空！", L"错误", MB_OK | MB_ICONERROR);
+                    continue;
+                }
+                result = TRUE;
+                break;
+            } else if (msg.hwnd == hCancelBtn) {
+                result = FALSE;
+                break;
+            }
+        } else if (msg.message == WM_CLOSE) {
+            result = FALSE;
+            break;
+        }
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    
+    // 清理
+    EnableWindow(g_mainWindow, TRUE);
+    SetForegroundWindow(g_mainWindow);
+    DestroyWindow(hInputDlg);
+    
+    if (!result) {
+        LogMessage(L"[FAVORITES] 用户取消了添加收藏操作");
+        return;
+    }
+    
+    LogMessage(L"[FAVORITES] 用户输入的收藏名称: %s", favoriteName);
     
     // 检查是否已存在于收藏夹中
     LogMessage(L"[FAVORITES] 检查路径是否已存在于收藏夹中");
@@ -63,12 +149,12 @@ void addCurrentPathToFavorites() {
     LogMessage(L"[FAVORITES] 路径不存在于收藏夹中，可以添加");
     
     // 添加到收藏夹数组
-    wcscpy_s(g_favorites[g_favoriteCount].name, MAX_PATH, dirName);
+    wcscpy_s(g_favorites[g_favoriteCount].name, MAX_PATH, favoriteName);
     wcscpy_s(g_favorites[g_favoriteCount].path, MAX_PATH, g_currentPath);
     g_favoriteCount++;
     
     LogMessage(L"[FAVORITES] 成功添加收藏夹项: %s (%s)，当前总数: %d", 
-               dirName, g_currentPath, g_favoriteCount);
+               favoriteName, g_currentPath, g_favoriteCount);
     
     // 更新树形视图
     LogMessage(L"[FAVORITES] 开始更新树形视图");

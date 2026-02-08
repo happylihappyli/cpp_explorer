@@ -1,6 +1,7 @@
 #include "settings.h"
 #include "file_utils.h"
 #include "log.h"
+#include "language.h"
 #include <commdlg.h>
 #include <stdio.h>
 #include <vector>
@@ -140,6 +141,9 @@ void removeFileAssociation(int index) {
 #define ID_BTN_SAVE 1010
 #define ID_BTN_CANCEL 1011
 #define ID_EDIT_FONTSIZE 1012  // 字体大小编辑框
+#define ID_COMBO_LANGUAGE 1013  // 语言选择下拉框
+
+static HWND g_hListLanguage = NULL;  // 语言选择列表框
 
 void RefreshList() {
     SendMessage(g_hListAssoc, LB_RESETCONTENT, 0, 0);
@@ -155,45 +159,53 @@ LRESULT CALLBACK SettingsDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         case WM_CREATE: {
             HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
+            // Language Selection
+            CreateWindowW(L"STATIC", getText(TEXT_SETTINGS_LANGUAGE), WS_CHILD | WS_VISIBLE, 10, 10, 150, 20, hwnd, NULL, NULL, NULL);
+            g_hListLanguage = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL, 10, 30, 200, 200, hwnd, (HMENU)ID_COMBO_LANGUAGE, NULL, NULL);
+            SendMessageW(g_hListLanguage, WM_SETFONT, (WPARAM)hFont, TRUE);
+            SendMessageW(g_hListLanguage, CB_ADDSTRING, 0, (LPARAM)L"简体中文");
+            SendMessageW(g_hListLanguage, CB_ADDSTRING, 0, (LPARAM)L"English");
+            SendMessageW(g_hListLanguage, CB_SETCURSEL, (WPARAM)getCurrentLanguage(), 0);
+
             // Default Editor
-            CreateWindowW(L"STATIC", L"默认编辑器路径:", WS_CHILD | WS_VISIBLE, 10, 10, 120, 20, hwnd, NULL, NULL, NULL);
-            g_hEditEditor = CreateWindowW(L"EDIT", g_editorPath, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 10, 30, 380, 25, hwnd, (HMENU)ID_EDIT_EDITOR, NULL, NULL);
+            CreateWindowW(L"STATIC", L"默认编辑器路径:", WS_CHILD | WS_VISIBLE, 250, 10, 120, 20, hwnd, NULL, NULL, NULL);
+            g_hEditEditor = CreateWindowW(L"EDIT", g_editorPath, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 250, 30, 200, 25, hwnd, (HMENU)ID_EDIT_EDITOR, NULL, NULL);
             SendMessage(g_hEditEditor, WM_SETFONT, (WPARAM)hFont, TRUE);
-            CreateWindowW(L"BUTTON", L"浏览...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 400, 30, 80, 25, hwnd, (HMENU)ID_BTN_BROWSE_EDITOR, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"浏览...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 460, 30, 80, 25, hwnd, (HMENU)ID_BTN_BROWSE_EDITOR, NULL, NULL);
 
             // Font Size
-            CreateWindowW(L"STATIC", L"字体大小 (6-24):", WS_CHILD | WS_VISIBLE, 10, 65, 120, 20, hwnd, NULL, NULL, NULL);
+            CreateWindowW(L"STATIC", getText(TEXT_SETTINGS_FONT_SIZE), WS_CHILD | WS_VISIBLE, 10, 65, 120, 20, hwnd, NULL, NULL, NULL);
             WCHAR fontSizeStr[16];
             wsprintfW(fontSizeStr, L"%d", g_fontSize);
             g_hEditFontSize = CreateWindowW(L"EDIT", fontSizeStr, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER, 10, 85, 80, 25, hwnd, (HMENU)ID_EDIT_FONTSIZE, NULL, NULL);
             SendMessage(g_hEditFontSize, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Associations List
-            CreateWindowW(L"STATIC", L"文件关联设置:", WS_CHILD | WS_VISIBLE, 10, 120, 120, 20, hwnd, NULL, NULL, NULL);
-            g_hListAssoc = CreateWindowW(L"LISTBOX", NULL, WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 10, 140, 470, 150, hwnd, (HMENU)ID_LIST_ASSOC, NULL, NULL);
+            CreateWindowW(L"STATIC", getText(TEXT_SETTINGS_ASSOC), WS_CHILD | WS_VISIBLE, 10, 130, 120, 20, hwnd, NULL, NULL, NULL);
+            g_hListAssoc = CreateWindowW(L"LISTBOX", NULL, WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 10, 150, 530, 200, hwnd, (HMENU)ID_LIST_ASSOC, NULL, NULL);
             SendMessage(g_hListAssoc, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             // Add/Edit Controls
-            CreateWindowW(L"STATIC", L"后缀名:", WS_CHILD | WS_VISIBLE, 10, 300, 60, 20, hwnd, NULL, NULL, NULL);
-            g_hEditExt = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 70, 300, 60, 25, hwnd, (HMENU)ID_EDIT_EXT, NULL, NULL);
+            CreateWindowW(L"STATIC", getText(TEXT_SETTINGS_EXT), WS_CHILD | WS_VISIBLE, 10, 365, 60, 20, hwnd, NULL, NULL, NULL);
+            g_hEditExt = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 70, 365, 60, 25, hwnd, (HMENU)ID_EDIT_EXT, NULL, NULL);
             SendMessage(g_hEditExt, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            CreateWindowW(L"STATIC", L"名称:", WS_CHILD | WS_VISIBLE, 140, 300, 40, 20, hwnd, NULL, NULL, NULL);
-            g_hEditName = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 180, 300, 100, 25, hwnd, (HMENU)ID_EDIT_NAME, NULL, NULL);
+            CreateWindowW(L"STATIC", getText(TEXT_SETTINGS_NAME), WS_CHILD | WS_VISIBLE, 140, 365, 40, 20, hwnd, NULL, NULL, NULL);
+            g_hEditName = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 180, 365, 100, 25, hwnd, (HMENU)ID_EDIT_NAME, NULL, NULL);
             SendMessage(g_hEditName, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            CreateWindowW(L"STATIC", L"程序路径:", WS_CHILD | WS_VISIBLE, 10, 335, 60, 20, hwnd, NULL, NULL, NULL);
-            g_hEditPath = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 70, 335, 310, 25, hwnd, (HMENU)ID_EDIT_PATH, NULL, NULL);
+            CreateWindowW(L"STATIC", getText(TEXT_SETTINGS_PROGRAM_PATH), WS_CHILD | WS_VISIBLE, 10, 400, 60, 20, hwnd, NULL, NULL, NULL);
+            g_hEditPath = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, 70, 400, 310, 25, hwnd, (HMENU)ID_EDIT_PATH, NULL, NULL);
             SendMessage(g_hEditPath, WM_SETFONT, (WPARAM)hFont, TRUE);
-            CreateWindowW(L"BUTTON", L"浏览...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 390, 335, 80, 25, hwnd, (HMENU)ID_BTN_BROWSE_PATH, NULL, NULL);
+            CreateWindowW(L"BUTTON", getText(TEXT_SETTINGS_BROWSE), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 390, 400, 80, 25, hwnd, (HMENU)ID_BTN_BROWSE_PATH, NULL, NULL);
 
             // Action Buttons
-            CreateWindowW(L"BUTTON", L"添加/更新", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 375, 100, 25, hwnd, (HMENU)ID_BTN_ADD, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"移除选中", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 120, 375, 100, 25, hwnd, (HMENU)ID_BTN_REMOVE, NULL, NULL);
+            CreateWindowW(L"BUTTON", getText(TEXT_SETTINGS_ADD_UPDATE), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 440, 100, 25, hwnd, (HMENU)ID_BTN_ADD, NULL, NULL);
+            CreateWindowW(L"BUTTON", getText(TEXT_SETTINGS_REMOVE), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 120, 440, 100, 25, hwnd, (HMENU)ID_BTN_REMOVE, NULL, NULL);
 
             // Dialog Buttons
-            CreateWindowW(L"BUTTON", L"保存全部", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 150, 420, 80, 25, hwnd, (HMENU)ID_BTN_SAVE, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 250, 420, 80, 25, hwnd, (HMENU)ID_BTN_CANCEL, NULL, NULL);
+            CreateWindowW(L"BUTTON", getText(TEXT_SETTINGS_SAVE_ALL), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 150, 485, 80, 25, hwnd, (HMENU)ID_BTN_SAVE, NULL, NULL);
+            CreateWindowW(L"BUTTON", getText(TEXT_SETTINGS_CANCEL), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 250, 485, 80, 25, hwnd, (HMENU)ID_BTN_CANCEL, NULL, NULL);
 
             RefreshList();
             break;
@@ -275,6 +287,13 @@ LRESULT CALLBACK SettingsDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                     SetWindowTextW(g_hEditName, assoc.name.c_str());
                     SetWindowTextW(g_hEditPath, assoc.command.c_str());
                 }
+            } else if (id == ID_COMBO_LANGUAGE && HIWORD(wParam) == CBN_SELCHANGE) {
+                int sel = (int)SendMessage(g_hListLanguage, CB_GETCURSEL, 0, 0);
+                if (sel != CB_ERR) {
+                    setCurrentLanguage((LanguageType)sel);
+                    // 提示用户重启程序以应用语言更改
+                    MessageBoxW(hwnd, L"Language changed. Please restart the application to apply changes.", L"Info", MB_OK | MB_ICONINFORMATION);
+                }
             }
             break;
         }
@@ -306,12 +325,12 @@ void ShowSettingsDialog(HWND parent) {
     
     RECT rc;
     GetWindowRect(parent, &rc);
-    int w = 500;
-    int h = 500;  // 增加高度以容纳字体大小选项
+    int w = 550;
+    int h = 650;  // 增加高度以容纳语言选择选项
     int x = rc.left + (rc.right - rc.left - w) / 2;
     int y = rc.top + (rc.bottom - rc.top - h) / 2;
     
-    g_hDialog = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, L"SettingsDialogClass", L"设置", 
+    g_hDialog = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, L"SettingsDialogClass", getText(TEXT_SETTINGS_TITLE), 
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE, 
         x, y, w, h, parent, NULL, GetModuleHandle(NULL), NULL);
         

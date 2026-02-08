@@ -68,7 +68,7 @@ env['RCCOM'] = '$RC $RCFLAGS /FO $TARGET $SOURCE'
 # 显式编译资源文件
 res_obj = env.Command('src/obj/resource.res', 'src/resource.rc', '$RCCOM')
 
-fixed_sources = ['src/explorer.cpp', 'src/favorites.cpp', 'src/tree_utils.cpp', 'src/log.cpp', 'src/file_utils.cpp', 'src/notification_handlers.cpp', 'src/go_button_handler.cpp', 'src/settings.cpp', 'src/registry_integration.cpp', 'src/context_menu_manager.cpp']
+fixed_sources = ['src/explorer.cpp', 'src/favorites.cpp', 'src/tree_utils.cpp', 'src/log.cpp', 'src/file_utils.cpp', 'src/notification_handlers.cpp', 'src/go_button_handler.cpp', 'src/settings.cpp', 'src/registry_integration.cpp', 'src/context_menu_manager.cpp', 'src/language.cpp']
 # 将资源对象文件添加到源列表
 fixed_sources.extend(res_obj)
 

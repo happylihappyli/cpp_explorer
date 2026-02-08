@@ -77,3 +77,17 @@ E:\GitHub3\biaoding\Dialog	53896
 E:\GitHub3\biaoding\godot	87225
 E:\GitHub3\biaoding\Resources	611974
 E:\GitHub3\biaoding\Shaders	7851
+E:\GitHub3\cpp\cpp_explorer\.vscode	2296
+E:\GitHub3\cpp\cpp_explorer\bin	532235
+E:\GitHub3\cpp\cpp_explorer\build	0
+E:\GitHub3\cpp\cpp_explorer\obj	73580
+E:\GitHub3\cpp\cpp_explorer\test	521243
+C:\Intel	211926
+F:\big_model	15289179792
+F:\conan_cache	0
+F:\msdownld.tmp	0
+F:\System Volume Information	0
+F:\tmp	218083247
+F:\溪水1	714173
+E:\GitHub3\workspace\block	110969
+E:\GitHub3\workspace\myftp	0
