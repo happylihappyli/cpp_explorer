@@ -361,7 +361,7 @@ void setCurrentDirectory(const WCHAR* path) {
     if (g_currentTabIndex >= 0 && g_tabCtrl) {
         const WCHAR* p = wcsrchr(path, L'\\');
         const WCHAR* name = p ? p + 1 : path;
-        if (!*name) name = path; // Root like C:\\
+        if (!*name) name = path; // Root like C:\ (drive root) 
         if (!*name) name = L"此电脑";
         // If "磁盘详情", keep it
         if (wcscmp(path, L"磁盘详情") == 0) name = L"磁盘详情";
@@ -2473,7 +2473,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // Remove quotes if present is handled by CommandLineToArgvW
         // But argv[0] is the first argument, not program name in this case?
         // wWinMain pCmdLine contains only arguments.
-        // CommandLineToArgvW parses a string. If pCmdLine is "C:\", argv[0] is C:\
+        // CommandLineToArgvW parses a string. If pCmdLine is "C:\", argv[0] is C:\ (with trailing backslash)
         
         lstrcpyW(g_currentPath, argv[0]);
         LocalFree(argv);

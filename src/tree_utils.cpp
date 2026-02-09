@@ -62,7 +62,7 @@ BOOL hasSubdirectories(const WCHAR* path) {
 
 // 获取节点完整路径
 void getNodeFullPath(HWND treeView, HTREEITEM hItem, WCHAR* fullPath, int bufferSize) {
-    WCHAR pathParts[100][MAX_PATH] = {0};
+    WCHAR pathParts[100][MAX_PATH] = {};
     int partCount = 0;
     
     // 从当前节点向上遍历到根节点，收集路径部分
