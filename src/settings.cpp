@@ -338,3 +338,54 @@ void ShowSettingsDialog(HWND parent) {
         EnableWindow(parent, FALSE);
     }
 }
+
+void saveWindowPlacement(const WindowPlacement& placement) {
+    WCHAR path[MAX_PATH];
+    getSettingsFilePath(path, MAX_PATH);
+    
+    WCHAR buffer[32];
+    wsprintfW(buffer, L"%d", placement.x);
+    WritePrivateProfileStringW(L"Window", L"X", buffer, path);
+    wsprintfW(buffer, L"%d", placement.y);
+    WritePrivateProfileStringW(L"Window", L"Y", buffer, path);
+    wsprintfW(buffer, L"%d", placement.width);
+    WritePrivateProfileStringW(L"Window", L"Width", buffer, path);
+    wsprintfW(buffer, L"%d", placement.height);
+    WritePrivateProfileStringW(L"Window", L"Height", buffer, path);
+    wsprintfW(buffer, L"%d", placement.isMaximized ? 1 : 0);
+    WritePrivateProfileStringW(L"Window", L"Maximized", buffer, path);
+}
+
+WindowPlacement loadWindowPlacement() {
+    WCHAR path[MAX_PATH];
+    getSettingsFilePath(path, MAX_PATH);
+    
+    WindowPlacement wp;
+    wp.x = GetPrivateProfileIntW(L"Window", L"X", CW_USEDEFAULT, path);
+    wp.y = GetPrivateProfileIntW(L"Window", L"Y", CW_USEDEFAULT, path);
+    wp.width = GetPrivateProfileIntW(L"Window", L"Width", 1200, path);
+    wp.height = GetPrivateProfileIntW(L"Window", L"Height", 800, path);
+    wp.isMaximized = GetPrivateProfileIntW(L"Window", L"Maximized", 0, path) != 0;
+    
+    // Validate position if not using defaults
+    if (wp.x != CW_USEDEFAULT && wp.y != CW_USEDEFAULT) {
+        RECT rc = {wp.x, wp.y, wp.x + wp.width, wp.y + wp.height};
+        HMONITOR hMonitor = MonitorFromRect(&rc, MONITOR_DEFAULTTONULL);
+        if (!hMonitor) {
+            // Check if at least top-left corner is visible
+            POINT pt = {wp.x, wp.y};
+            hMonitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONULL);
+        }
+        
+        if (!hMonitor) {
+            // Position is invalid (off-screen), reset to defaults
+            wp.x = CW_USEDEFAULT;
+            wp.y = CW_USEDEFAULT;
+            wp.width = 1200;
+            wp.height = 800;
+            wp.isMaximized = false;
+        }
+    }
+    
+    return wp;
+}

@@ -11,7 +11,17 @@ struct FileAssociation {
     std::wstring command;
 };
 
+struct WindowPlacement {
+    int x;
+    int y;
+    int width;
+    int height;
+    bool isMaximized;
+};
+
 void loadSettings();
+void saveWindowPlacement(const WindowPlacement& placement);
+WindowPlacement loadWindowPlacement();
 void getEditorPath(WCHAR* buffer, int bufferSize);
 void setEditorPath(const WCHAR* path);
 void ShowSettingsDialog(HWND parent);

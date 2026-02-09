@@ -2016,6 +2016,27 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
             // 保存布局状态
             saveLayoutState();
+
+            // 保存窗口位置和大小
+            WINDOWPLACEMENT wp = {sizeof(WINDOWPLACEMENT)};
+            if (GetWindowPlacement(hwnd, &wp)) {
+                WindowPlacement placement;
+                placement.isMaximized = (wp.showCmd == SW_SHOWMAXIMIZED);
+                if (placement.isMaximized) {
+                    placement.x = wp.rcNormalPosition.left;
+                    placement.y = wp.rcNormalPosition.top;
+                    placement.width = wp.rcNormalPosition.right - wp.rcNormalPosition.left;
+                    placement.height = wp.rcNormalPosition.bottom - wp.rcNormalPosition.top;
+                } else {
+                    RECT rc;
+                    GetWindowRect(hwnd, &rc);
+                    placement.x = rc.left;
+                    placement.y = rc.top;
+                    placement.width = rc.right - rc.left;
+                    placement.height = rc.bottom - rc.top;
+                }
+                saveWindowPlacement(placement);
+            }
             
             PostQuitMessage(0);
             return 0;
@@ -2179,19 +2200,15 @@ BOOL RegisterWindowClass(HINSTANCE hInstance) {
 
 // 创建主窗口
 HWND CreateMainWindow(HINSTANCE hInstance) {
-    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-    int windowWidth = 1900;
-    int windowHeight = 900;
-    int x = (screenWidth - windowWidth) / 2;
-    int y = (screenHeight - windowHeight) / 2;
+    // Load saved window placement
+    WindowPlacement wp = loadWindowPlacement();
 
     HWND hwnd = CreateWindowExW(
         0,
         L"ExplorerWindowClass",
         L"我的资源管理器",
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-        x, y, windowWidth, windowHeight,
+        wp.x, wp.y, wp.width, wp.height,
         NULL, NULL, hInstance, NULL
     );
     
@@ -2229,7 +2246,11 @@ HWND CreateMainWindow(HINSTANCE hInstance) {
         
         DragAcceptFiles(hwnd, TRUE); // Enable Drop Files
 
-        ShowWindow(hwnd, SW_SHOW);
+        if (wp.isMaximized) {
+            ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+        } else {
+            ShowWindow(hwnd, SW_SHOW);
+        }
         UpdateWindow(hwnd);
         
         LogMessage(L"主窗口显示完成");

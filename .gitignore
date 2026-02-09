@@ -5,3 +5,4 @@ bin/layout_state.ini
 /.vscode
 bin/tree_state.txt
 /src/obj
+.sconsign.dblite
