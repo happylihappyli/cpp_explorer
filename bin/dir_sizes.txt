@@ -91,3 +91,21 @@ F:\tmp	218083247
 F:\溪水1	714173
 E:\GitHub3\workspace\block	110969
 E:\GitHub3\workspace\myftp	0
+E:\GitHub3\cpp\BV_WorkSpace\installer	561603876
+E:\GitHub3\cpp\MyChat\client_cpp\bin	294912
+E:\GitHub3\cpp\MyChat\client_cpp\obj	669470
+★ 收藏夹\big_model	0
+★ 收藏夹\我的资源管理器	0
+★ 收藏夹\GitHub3	0
+★ 收藏夹\containerLoading	0
+★ 收藏夹\Code	0
+★ 收藏夹\002-总线舵机（ZP系列）	0
+★ 收藏夹\d\data\container_loading	0
+★ 收藏夹\cpp	0
+★ 收藏夹\000	0
+★ 收藏夹\workspace	0
+★ 收藏夹\cloud_huge	0
+★ 收藏夹\WorkSpace bin	0
+★ 收藏夹\MyChat	0
+E:\GitHub3\workspace\poke	48614
+E:\GitHub3\workspace\末日战舰	0

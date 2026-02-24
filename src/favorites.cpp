@@ -49,88 +49,17 @@ void addCurrentPathToFavorites() {
         wcscpy_s(defaultName, MAX_PATH, g_currentPath);
     }
     
-    // 弹出输入对话框让用户输入收藏名称
-    WCHAR favoriteName[MAX_PATH];
+    // 使用简单的输入框
+    WCHAR favoriteName[MAX_PATH] = L"";
     wcscpy_s(favoriteName, MAX_PATH, defaultName);
     
-    // 创建输入对话框
-    HWND hInputDlg = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
-        L"STATIC", L"",
-        WS_POPUP | WS_CAPTION | WS_SYSMENU,
-        0, 0, 300, 150,
-        g_mainWindow, NULL, GetModuleHandle(NULL), NULL
-    );
-    
-    if (!hInputDlg) {
-        LogMessage(L"[FAVORITES] [ERROR] 无法创建输入对话框");
-        ShowCustomTooltip(g_mainWindow, L"无法创建输入对话框！");
-        return;
-    }
-    
-    // 居中显示对话框
-    RECT rcParent, rcDlg;
-    GetWindowRect(g_mainWindow, &rcParent);
-    GetWindowRect(hInputDlg, &rcDlg);
-    int x = rcParent.left + (rcParent.right - rcParent.left - (rcDlg.right - rcDlg.left)) / 2;
-    int y = rcParent.top + (rcParent.bottom - rcParent.top - (rcDlg.bottom - rcDlg.top)) / 2;
-    SetWindowPos(hInputDlg, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
-    
-    // 创建提示文本
-    CreateWindowW(L"STATIC", L"请输入收藏名称:", WS_CHILD | WS_VISIBLE, 10, 10, 280, 20, hInputDlg, NULL, NULL, NULL);
-    
-    // 创建输入框
-    HWND hEdit = CreateWindowW(L"EDIT", favoriteName, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 10, 35, 280, 25, hInputDlg, (HMENU)1, NULL, NULL);
-    SendMessage(hEdit, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-    SetFocus(hEdit);
-    
-    // 创建确定按钮
-    HWND hOKBtn = CreateWindowW(L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 50, 80, 80, 30, hInputDlg, (HMENU)IDOK, NULL, NULL);
-    SendMessage(hOKBtn, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-    
-    // 创建取消按钮
-    HWND hCancelBtn = CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 170, 80, 80, 30, hInputDlg, (HMENU)IDCANCEL, NULL, NULL);
-    SendMessage(hCancelBtn, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-    
-    // 设置对话框标题
-    SetWindowTextW(hInputDlg, L"添加到收藏夹");
-    
-    // 显示对话框
-    ShowWindow(hInputDlg, SW_SHOW);
-    UpdateWindow(hInputDlg);
-    EnableWindow(g_mainWindow, FALSE);
-    
-    // 消息循环
-    MSG msg;
-    BOOL result = FALSE;
-    while (GetMessage(&msg, NULL, 0, 0)) {
-        if (msg.message == WM_COMMAND) {
-            if (msg.hwnd == hOKBtn) {
-                GetWindowTextW(hEdit, favoriteName, MAX_PATH);
-                if (wcslen(favoriteName) == 0) {
-                    MessageBoxW(hInputDlg, L"收藏名称不能为空！", L"错误", MB_OK | MB_ICONERROR);
-                    continue;
-                }
-                result = TRUE;
-                break;
-            } else if (msg.hwnd == hCancelBtn) {
-                result = FALSE;
-                break;
-            }
-        } else if (msg.message == WM_CLOSE) {
-            result = FALSE;
-            break;
+    // 使用系统输入框
+    if (InputBox(L"添加到收藏夹", L"请输入收藏名称:", favoriteName, MAX_PATH)) {
+        if (wcslen(favoriteName) == 0) {
+            ShowCustomTooltip(g_mainWindow, L"名称不能为空！");
+            return;
         }
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
-    
-    // 清理
-    EnableWindow(g_mainWindow, TRUE);
-    SetForegroundWindow(g_mainWindow);
-    DestroyWindow(hInputDlg);
-    
-    if (!result) {
+    } else {
         LogMessage(L"[FAVORITES] 用户取消了添加收藏操作");
         return;
     }
@@ -168,6 +97,131 @@ void addCurrentPathToFavorites() {
     
     ShowCustomTooltip(g_mainWindow, L"已添加到收藏夹！");
     LogMessage(L"[FAVORITES] 添加收藏夹操作完成");
+}
+
+// 全局变量用于InputBox
+static HWND g_inputBoxWnd = NULL;
+static WCHAR g_inputBoxBuffer[MAX_PATH] = L"";
+static BOOL g_inputBoxResult = FALSE;
+
+// InputBox窗口过程
+static LRESULT CALLBACK InputBoxWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_CREATE:
+            return 0;
+            
+        case WM_COMMAND:
+            if (LOWORD(wParam) == 1 && HIWORD(wParam) == BN_CLICKED) {
+                // 确定按钮
+                HWND hEdit = GetDlgItem(hwnd, 100);
+                GetWindowTextW(hEdit, g_inputBoxBuffer, MAX_PATH);
+                g_inputBoxResult = TRUE;
+                DestroyWindow(hwnd);
+                return 0;
+            } else if (LOWORD(wParam) == 2 && HIWORD(wParam) == BN_CLICKED) {
+                // 取消按钮
+                g_inputBoxResult = FALSE;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+            
+        case WM_DESTROY:
+            g_inputBoxWnd = NULL;
+            PostQuitMessage(0);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+// 简单的输入框函数
+BOOL InputBox(const WCHAR* title, const WCHAR* prompt, WCHAR* buffer, int bufferSize) {
+    // 初始化全局变量
+    wcscpy_s(g_inputBoxBuffer, MAX_PATH, buffer);
+    g_inputBoxResult = FALSE;
+    
+    // 注册窗口类
+    static WNDCLASSEXW wc = {0};
+    static BOOL registered = FALSE;
+    if (!registered) {
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = InputBoxWndProc;
+        wc.hInstance = GetModuleHandle(NULL);
+        wc.lpszClassName = L"SimpleInputBox";
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        registered = RegisterClassExW(&wc) != 0;
+    }
+    
+    // 获取主窗口位置用于居中
+    RECT mainRect;
+    GetWindowRect(g_mainWindow, &mainRect);
+    int dlgWidth = 400;
+    int dlgHeight = 180;
+    int x = mainRect.left + (mainRect.right - mainRect.left - dlgWidth) / 2;
+    int y = mainRect.top + (mainRect.bottom - mainRect.top - dlgHeight) / 2;
+    
+    // 创建对话框窗口
+    g_inputBoxWnd = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        L"SimpleInputBox",
+        title ? title : L"输入",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+        x, y, dlgWidth, dlgHeight,
+        g_mainWindow, NULL, GetModuleHandle(NULL), NULL
+    );
+    
+    if (!g_inputBoxWnd) {
+        return FALSE;
+    }
+    
+    // 创建提示标签
+    HWND hStatic = CreateWindowW(L"STATIC", prompt ? prompt : L"请输入:",
+        WS_CHILD | WS_VISIBLE,
+        20, 20, 360, 20,
+        g_inputBoxWnd, NULL, GetModuleHandle(NULL), NULL);
+    
+    // 创建输入框
+    HWND hEdit = CreateWindowW(L"EDIT", g_inputBoxBuffer,
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        20, 45, 360, 28,
+        g_inputBoxWnd, (HMENU)100, GetModuleHandle(NULL), NULL);
+    
+    // 创建确定按钮
+    HWND hOk = CreateWindowW(L"BUTTON", L"确定",
+        WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+        200, 90, 80, 28,
+        g_inputBoxWnd, (HMENU)1, GetModuleHandle(NULL), NULL);
+    
+    // 创建取消按钮
+    HWND hCancel = CreateWindowW(L"BUTTON", L"取消",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        290, 90, 80, 28,
+        g_inputBoxWnd, (HMENU)2, GetModuleHandle(NULL), NULL);
+    
+    // 禁用主窗口
+    EnableWindow(g_mainWindow, FALSE);
+    
+    // 显示窗口
+    ShowWindow(g_inputBoxWnd, SW_SHOW);
+    SetFocus(hEdit);
+    
+    // 消息循环
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    
+    // 清理
+    EnableWindow(g_mainWindow, TRUE);
+    SetForegroundWindow(g_mainWindow);
+    
+    // 复制结果
+    if (g_inputBoxResult) {
+        wcscpy_s(buffer, bufferSize, g_inputBoxBuffer);
+    }
+    
+    return g_inputBoxResult;
 }
 
 // 移除选中的收藏夹项

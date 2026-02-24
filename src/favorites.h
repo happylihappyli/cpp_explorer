@@ -48,6 +48,7 @@ void removeSelectedFavorite();
 void editFavoriteName();
 void removeFavoriteByPath(const WCHAR* path);
 HTREEITEM createFavoritesNode();
+BOOL InputBox(const WCHAR* title, const WCHAR* prompt, WCHAR* buffer, int bufferSize);
 
 // 对话框函数声明
 BOOL showInputDialog(HWND hwndOwner, LPCWSTR title, LPCWSTR prompt, LPWSTR text, int textSize);
